@@ -1,0 +1,15 @@
+{
+  "name": "phyfog-radiant-war",
+  "version": "1.0.0",
+  "description": "PhyFog optical radiation battle game - multiplayer",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "tunnel": "ngrok start phyfog --config ngrok.yml"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "socket.io": "^4.8.0"
+  }
+}

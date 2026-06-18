@@ -1,0 +1,1493 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PhyFog 光学辐射对战 — 地图编辑器</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0d1117;
+      --sidebar: #161b22;
+      --panel: #21262d;
+      --border: #30363d;
+      --text: #e6edf3;
+      --text-muted: #8b949e;
+      --accent: #58a6ff;
+      --accent-hover: #79b8ff;
+      --danger: #f85149;
+      --success: #3fb950;
+    }
+
+    body {
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+    }
+
+    /* ── Sidebar ── */
+    .sidebar {
+      width: 280px;
+      min-width: 280px;
+      background: var(--sidebar);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+      z-index: 10;
+    }
+
+    .sidebar-header {
+      padding: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .sidebar-header h1 {
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+
+    .sidebar-header p {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+
+    .section {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .section-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+      margin-bottom: 10px;
+    }
+
+    .field {
+      margin-bottom: 10px;
+    }
+
+    .field label {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-bottom: 4px;
+    }
+
+    .field label span.val {
+      color: var(--accent);
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .field input[type="range"] {
+      width: 100%;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+
+    .field input[type="number"] {
+      width: 100%;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      padding: 6px 10px;
+      font-size: 13px;
+      outline: none;
+    }
+
+    .field input[type="number"]:focus {
+      border-color: var(--accent);
+    }
+
+    .field-check {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+      font-size: 12px;
+      color: var(--text);
+      cursor: pointer;
+    }
+
+    .field-check input[type="checkbox"] {
+      accent-color: var(--accent);
+      width: 14px;
+      height: 14px;
+      cursor: pointer;
+    }
+
+    .win-hint {
+      font-size: 11px;
+      color: var(--text-muted);
+      line-height: 1.5;
+      margin-top: 4px;
+    }
+
+    /* ── Toolbar ── */
+    .toolbar {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+
+    .tool-btn {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 12px;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+      text-align: left;
+    }
+
+    .tool-btn:hover {
+      background: #2d333b;
+      border-color: #484f58;
+    }
+
+    .tool-btn.active {
+      background: #1f3a5f;
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .tool-btn .icon {
+      font-size: 16px;
+      width: 20px;
+      text-align: center;
+      flex-shrink: 0;
+    }
+
+    /* ── Params panel ── */
+    .params-panel {
+      display: none;
+    }
+
+    .params-panel.visible {
+      display: block;
+    }
+
+    .param-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .param-row label {
+      font-size: 12px;
+      color: var(--text-muted);
+      min-width: 80px;
+    }
+
+    .param-row input[type="range"] {
+      flex: 1;
+      accent-color: var(--accent);
+    }
+
+    .param-row .param-val {
+      font-size: 12px;
+      color: var(--accent);
+      min-width: 40px;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .player-rotate-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-top: 8px;
+    }
+
+    .player-rotate-btn {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 12px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .player-rotate-btn:hover {
+      background: #2d333b;
+    }
+
+    .player-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    /* ── Export ── */
+    .export-btn {
+      width: 100%;
+      padding: 10px;
+      background: var(--accent);
+      border: none;
+      border-radius: 8px;
+      color: #0d1117;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .export-btn:hover {
+      background: var(--accent-hover);
+    }
+
+    .sidebar-footer {
+      padding: 12px 16px;
+      margin-top: auto;
+    }
+
+    /* ── Canvas area ── */
+    .main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .canvas-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 16px;
+      background: var(--sidebar);
+      border-bottom: 1px solid var(--border);
+      font-size: 12px;
+      color: var(--text-muted);
+      flex-shrink: 0;
+    }
+
+    .canvas-bar .coords {
+      font-variant-numeric: tabular-nums;
+      color: var(--text);
+    }
+
+    .zoom-controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .zoom-btn {
+      width: 28px;
+      height: 28px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-size: 16px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .zoom-btn:hover { background: #2d333b; }
+
+    .zoom-label {
+      min-width: 40px;
+      text-align: center;
+      color: var(--text);
+    }
+
+    .canvas-wrap {
+      flex: 1;
+      overflow: auto;
+      background: #000;
+      position: relative;
+    }
+
+    #mapCanvas {
+      display: block;
+      cursor: crosshair;
+    }
+
+    .hint {
+      font-size: 11px;
+      color: var(--text-muted);
+      line-height: 1.5;
+      margin-top: 6px;
+    }
+
+    .selected-info {
+      font-size: 12px;
+      color: var(--accent);
+      margin-bottom: 8px;
+      padding: 6px 8px;
+      background: #1f3a5f33;
+      border-radius: 6px;
+      border: 1px solid #1f3a5f;
+    }
+  </style>
+</head>
+<body>
+
+<aside class="sidebar">
+  <div class="sidebar-header">
+    <h1>PhyFog 地图编辑器</h1>
+    <p>光学辐射对战 · 网格地图设计工具</p>
+  </div>
+
+  <!-- Map Settings -->
+  <div class="section">
+    <div class="section-title">地图设置</div>
+    <div class="field">
+      <label>格子数量 <span class="val" id="gridSizeVal">100</span></label>
+      <input type="range" id="gridSize" min="20" max="120" value="100">
+    </div>
+    <div class="field">
+      <label>格子大小 (px) <span class="val" id="cellSizeVal">30</span></label>
+      <input type="range" id="cellSize" min="20" max="50" value="30">
+    </div>
+    <div class="field">
+      <label>初始能量 (J)</label>
+      <input type="number" id="initialEnergy" min="1" max="9999" value="100">
+    </div>
+    <div class="field">
+      <label>初始可见范围 (格) <span class="val" id="visibilityVal">5</span></label>
+      <input type="range" id="visibility" min="1" max="30" value="5">
+    </div>
+    <div class="field">
+      <label>游玩人数 <span class="val" id="playerCountVal">2</span></label>
+      <input type="range" id="playerCount" min="2" max="8" value="2">
+    </div>
+    <div class="section-title" style="margin-top:12px">默认生命值</div>
+    <div class="field">
+      <label>主光塔 HP</label>
+      <input type="number" id="defaultHpPlayer" min="1" max="9999" value="100">
+    </div>
+    <div class="field">
+      <label>进攻塔 HP</label>
+      <input type="number" id="defaultHpAttack" min="1" max="9999" value="80">
+    </div>
+    <div class="field">
+      <label>太阳能板 HP</label>
+      <input type="number" id="defaultHpSolar" min="1" max="9999" value="50">
+    </div>
+    <div class="field">
+      <label>墙壁 HP</label>
+      <input type="number" id="defaultHpWall" min="1" max="9999" value="100">
+    </div>
+    <div class="section-title" style="margin-top:12px">信标与胜利条件</div>
+    <div class="field">
+      <label>信标默认激活能量 (J)</label>
+      <input type="number" id="defaultBeaconActivation" min="1" max="9999" value="10">
+    </div>
+    <label class="field-check">
+      <input type="checkbox" id="winCaptureBeacons" checked>
+      <span>占据所有信标获胜</span>
+    </label>
+    <label class="field-check">
+      <input type="checkbox" id="winDestroyTower" checked>
+      <span>摧毁对方主光塔获胜</span>
+    </label>
+    <p class="win-hint">信标：可见光能量 ≥ 激活阈值时可占领；对手能量更高则夺取</p>
+  </div>
+
+  <!-- Toolbar -->
+  <div class="section">
+    <div class="section-title">工具栏</div>
+    <div class="toolbar" id="toolbar"></div>
+    <p class="hint">左键点击或拖拽连续放置 · 每格仅一个单位 · 同类型工具单击可选中编辑 · 透镜选中显示聚焦圈</p>
+  </div>
+
+  <!-- Params -->
+  <div class="section">
+    <div class="section-title">参数调整</div>
+    <div id="selectedInfo" class="selected-info" style="display:none"></div>
+    <div id="paramsPanel" class="params-panel">
+      <div id="paramWall" style="display:none">
+        <div class="param-row">
+          <label>生命值</label>
+          <input type="number" id="wallHp" min="1" max="9999" value="100" style="flex:1;background:var(--panel);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:4px 8px;font-size:12px">
+        </div>
+      </div>
+      <div id="paramMirror" style="display:none">
+        <div class="param-row">
+          <label>旋转角度</label>
+          <input type="range" id="mirrorAngle" min="0" max="360" value="45">
+          <span class="param-val" id="mirrorAngleVal">45°</span>
+        </div>
+      </div>
+      <div id="paramLens" style="display:none">
+        <div class="param-row">
+          <label>焦距 (格)</label>
+          <input type="range" id="lensFocal" min="2" max="10" value="5">
+          <span class="param-val" id="lensFocalVal">5</span>
+        </div>
+      </div>
+      <div id="paramSolar" style="display:none">
+        <div class="param-row">
+          <label>每十秒能量</label>
+          <input type="number" id="solarEnergyPer10s" min="0" max="9999" value="10" style="flex:1;background:var(--panel);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:4px 8px;font-size:12px">
+          <span class="param-val">J</span>
+        </div>
+        <div class="param-row">
+          <label>转化能量</label>
+          <input type="number" id="solarConversion" min="0" max="9999" value="30" style="flex:1;background:var(--panel);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:4px 8px;font-size:12px">
+          <span class="param-val">J</span>
+        </div>
+        <div class="param-row">
+          <label>生命值</label>
+          <input type="number" id="solarHp" min="1" max="9999" value="50" style="flex:1;background:var(--panel);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:4px 8px;font-size:12px">
+        </div>
+      </div>
+      <div id="paramAttack" style="display:none">
+        <div class="param-row">
+          <label>初始朝向</label>
+          <input type="range" id="attackAngle" min="0" max="360" value="0">
+          <span class="param-val" id="attackAngleVal">0°</span>
+        </div>
+        <div class="param-row">
+          <label>生命值</label>
+          <input type="number" id="attackHp" min="1" max="9999" value="80" style="flex:1;background:var(--panel);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:4px 8px;font-size:12px">
+        </div>
+      </div>
+      <div id="paramPlayer" style="display:none">
+        <div class="param-row">
+          <label>生命值</label>
+          <input type="number" id="playerHp" min="1" max="9999" value="100" style="flex:1;background:var(--panel);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:4px 8px;font-size:12px">
+        </div>
+      </div>
+      <div id="paramBeacon" style="display:none">
+        <div class="param-row">
+          <label>激活能量</label>
+          <input type="number" id="beaconActivation" min="1" max="9999" value="10" style="flex:1;background:var(--panel);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:4px 8px;font-size:12px">
+          <span class="param-val">J</span>
+        </div>
+        <p class="hint" style="margin-top:4px">可见光照射能量 ≥ 此值可激活；更高能量可夺取</p>
+      </div>
+    </div>
+    <div class="section-title" style="margin-top:12px">旋转光塔</div>
+    <div class="player-rotate-list" id="playerRotateList"></div>
+    <p class="hint">选中 Pn 光塔工具后点击地图放置位置 · 进攻塔选中后可调整朝向与生命值</p>
+  </div>
+
+  <div class="sidebar-footer">
+    <button class="export-btn" id="exportBtn">💾 导出 JSON</button>
+  </div>
+</aside>
+
+<main class="main">
+  <div class="canvas-bar">
+    <span>工具: <strong id="currentToolLabel">墙壁</strong></span>
+    <span class="coords" id="beaconCount">信标: 0</span>
+    <span class="coords" id="mouseCoords">—</span>
+    <div class="zoom-controls">
+      <button class="zoom-btn" id="zoomOut" title="缩小">−</button>
+      <span class="zoom-label" id="zoomLabel">100%</span>
+      <button class="zoom-btn" id="zoomIn" title="放大">+</button>
+      <button class="zoom-btn" id="zoomReset" title="重置缩放" style="font-size:11px;width:auto;padding:0 8px">重置</button>
+    </div>
+  </div>
+  <div class="canvas-wrap" id="canvasWrap">
+    <canvas id="mapCanvas"></canvas>
+  </div>
+</main>
+
+<script>
+(function () {
+  'use strict';
+
+  // ── Constants ──
+  const PLAYER_COLORS = [
+    '#3b82f6', '#ef4444', '#22c55e', '#f59e0b',
+    '#a855f7', '#ec4899', '#06b6d4', '#f97316'
+  ];
+
+  const TOOLS = [
+    { id: 'wall',         icon: '■', label: '墙壁',     desc: '吸收所有光(除γ射线)' },
+    { id: 'mirror',       icon: '◇', label: '平面镜',   desc: '可调角度，不反射γ射线' },
+    { id: 'lens',         icon: '○', label: '透镜',     desc: '可调焦距，不影响γ射线' },
+    { id: 'solar',        icon: '☀️', label: '太阳能板', desc: '能量转化' },
+    { id: 'lead',         icon: '▣', label: '铅板',     desc: '阻挡所有光' },
+    { id: 'attack_tower', icon: '⚔️', label: '进攻塔',   desc: '可占领切换视角' },
+    { id: 'beacon',       icon: '📡', label: '信标',     desc: '可见光激活，高能量夺取，占满获胜' },
+    { id: 'eraser',       icon: '🧼', label: '橡皮擦',   desc: '清除格子' },
+  ];
+
+  const DEFAULT_PARAMS = {
+    mirror:       { angle: 45 },
+    lens:         { focal: 5 },
+    solar:        { energyPer10s: 10, conversionEnergy: 30 },
+    attack_tower: { angle: 0 },
+    wall:         {},
+    beacon:       { activationThreshold: 10 },
+  };
+
+  // ── State ──
+  const state = {
+    gridSize: 100,
+    cellSize: 30,
+    initialEnergy: 100,
+    visibility: 5,
+    playerCount: 2,
+    zoom: 1,
+    currentTool: 'wall',
+    cells: {},
+    players: [],
+    selectedCell: null,
+    selectedPlayerId: null,
+    isDrawing: false,
+    defaultHp: {
+      player_tower: 100,
+      attack_tower: 80,
+      solar: 50,
+      wall: 100,
+    },
+    defaultBeaconActivation: 10,
+    winConditions: {
+      captureAllBeacons: true,
+      destroyEnemyMainTower: true,
+    },
+  };
+
+  // ── DOM refs ──
+  const canvas = document.getElementById('mapCanvas');
+  const ctx = canvas.getContext('2d');
+  const canvasWrap = document.getElementById('canvasWrap');
+
+  // ── Player default positions (relative to grid) ──
+  function getDefaultPlayerPos(index, total, gridSize) {
+    const margin = Math.max(3, Math.floor(gridSize * 0.08));
+    const positions = [
+      { x: margin, y: Math.floor(gridSize / 2), angle: 0 },
+      { x: gridSize - 1 - margin, y: Math.floor(gridSize / 2), angle: 180 },
+      { x: Math.floor(gridSize / 2), y: margin, angle: 90 },
+      { x: Math.floor(gridSize / 2), y: gridSize - 1 - margin, angle: 270 },
+      { x: margin, y: margin, angle: 45 },
+      { x: gridSize - 1 - margin, y: margin, angle: 135 },
+      { x: margin, y: gridSize - 1 - margin, angle: 315 },
+      { x: gridSize - 1 - margin, y: gridSize - 1 - margin, angle: 225 },
+    ];
+    return positions[index] || positions[0];
+  }
+
+  function initPlayers(count) {
+    const old = state.players;
+    state.players = [];
+    for (let i = 0; i < count; i++) {
+      const def = getDefaultPlayerPos(i, count, state.gridSize);
+      const existing = old[i];
+      state.players.push({
+        id: i + 1,
+        x: existing ? existing.x : def.x,
+        y: existing ? existing.y : def.y,
+        angle: existing ? existing.angle : def.angle,
+        hp: existing ? existing.hp : state.defaultHp.player_tower,
+        color: PLAYER_COLORS[i],
+      });
+    }
+    // Remove player tower cells from map if any
+    rebuildPlayerCells();
+    renderPlayerRotateList();
+    render();
+  }
+
+  function rebuildPlayerCells() {
+    // Remove any cell that was a player tower marker
+    for (const key of Object.keys(state.cells)) {
+      if (state.cells[key].type && state.cells[key].type.startsWith('player_')) {
+        delete state.cells[key];
+      }
+    }
+  }
+
+  function cellKey(x, y) { return `${x},${y}`; }
+
+  function isPlayerTowerCell(x, y) {
+    return state.players.some(p => p.x === x && p.y === y);
+  }
+
+  // ── Toolbar build ──
+  function buildToolbar() {
+    const toolbar = document.getElementById('toolbar');
+    toolbar.innerHTML = '';
+
+    TOOLS.forEach(tool => {
+      const btn = document.createElement('button');
+      btn.className = 'tool-btn' + (state.currentTool === tool.id ? ' active' : '');
+      btn.dataset.tool = tool.id;
+      btn.innerHTML = `<span class="icon">${tool.icon}</span><span>${tool.label}</span>`;
+      btn.title = tool.desc;
+      btn.addEventListener('click', () => selectTool(tool.id));
+      toolbar.appendChild(btn);
+    });
+
+    renderPlayerTools();
+  }
+
+  function renderPlayerTools() {
+    const toolbar = document.getElementById('toolbar');
+    // Remove old player tool buttons
+    toolbar.querySelectorAll('[data-player]').forEach(el => el.remove());
+
+    state.players.forEach(p => {
+      const btn = document.createElement('button');
+      btn.className = 'tool-btn' + (state.currentTool === `player_${p.id}` ? ' active' : '');
+      btn.dataset.tool = `player_${p.id}`;
+      btn.dataset.player = p.id;
+      btn.innerHTML = `<span class="icon" style="color:${p.color}">◉</span><span>P${p.id} 光塔</span>`;
+      btn.title = `玩家 ${p.id} 主光塔 — 点击地图放置位置`;
+      btn.addEventListener('click', () => selectTool(`player_${p.id}`));
+      toolbar.appendChild(btn);
+    });
+  }
+
+  function selectTool(toolId) {
+    state.currentTool = toolId;
+    state.selectedCell = null;
+    state.selectedPlayerId = null;
+    updateParamsPanel();
+    document.querySelectorAll('.tool-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.tool === toolId);
+    });
+    const label = [...TOOLS, ...state.players.map(p => ({ id: `player_${p.id}`, label: `P${p.id} 光塔` }))]
+      .find(t => t.id === toolId);
+    document.getElementById('currentToolLabel').textContent = label ? label.label : toolId;
+    render();
+  }
+
+  // ── Player rotate list ──
+  function renderPlayerRotateList() {
+    const list = document.getElementById('playerRotateList');
+    list.innerHTML = '';
+    state.players.forEach(p => {
+      const btn = document.createElement('button');
+      btn.className = 'player-rotate-btn';
+      btn.innerHTML = `
+        <span style="display:flex;align-items:center;gap:8px">
+          <span class="player-dot" style="background:${p.color}"></span>
+          P${p.id} 旋转光塔 (${p.angle}°)
+        </span>
+        <span>↻ +15°</span>`;
+      btn.addEventListener('click', () => {
+        p.angle = (p.angle + 15) % 360;
+        renderPlayerRotateList();
+        render();
+      });
+      list.appendChild(btn);
+    });
+  }
+
+  // ── Params panel ──
+  function clearSelection() {
+    state.selectedCell = null;
+    state.selectedPlayerId = null;
+    updateParamsPanel();
+  }
+
+  function updateParamsPanel() {
+    const panel = document.getElementById('paramsPanel');
+    const info = document.getElementById('selectedInfo');
+
+    ['paramWall', 'paramMirror', 'paramLens', 'paramSolar', 'paramAttack', 'paramPlayer', 'paramBeacon'].forEach(id => {
+      document.getElementById(id).style.display = 'none';
+    });
+
+    if (state.selectedPlayerId) {
+      const p = state.players.find(pl => pl.id === state.selectedPlayerId);
+      if (!p) {
+        panel.classList.remove('visible');
+        info.style.display = 'none';
+        return;
+      }
+      info.style.display = 'block';
+      info.textContent = `已选中: P${p.id} 主光塔 @ (${p.x}, ${p.y})`;
+      panel.classList.add('visible');
+      document.getElementById('paramPlayer').style.display = 'block';
+      document.getElementById('playerHp').value = p.hp;
+      return;
+    }
+
+    const sel = state.selectedCell;
+    if (!sel) {
+      panel.classList.remove('visible');
+      info.style.display = 'none';
+      return;
+    }
+
+    const el = state.cells[cellKey(sel.x, sel.y)];
+    if (!el) {
+      panel.classList.remove('visible');
+      info.style.display = 'none';
+      return;
+    }
+
+    const typeNames = {
+      wall: '墙壁', mirror: '平面镜', lens: '透镜',
+      solar: '太阳能板', lead: '铅板', attack_tower: '进攻塔', beacon: '信标'
+    };
+
+    info.style.display = 'block';
+    info.textContent = `已选中: ${typeNames[el.type] || el.type} @ (${sel.x}, ${sel.y})`;
+    panel.classList.add('visible');
+
+    if (el.type === 'wall') {
+      document.getElementById('paramWall').style.display = 'block';
+      document.getElementById('wallHp').value = el.hp;
+    } else if (el.type === 'mirror') {
+      document.getElementById('paramMirror').style.display = 'block';
+      document.getElementById('mirrorAngle').value = el.angle;
+      document.getElementById('mirrorAngleVal').textContent = el.angle + '°';
+    } else if (el.type === 'lens') {
+      document.getElementById('paramLens').style.display = 'block';
+      document.getElementById('lensFocal').value = el.focal;
+      document.getElementById('lensFocalVal').textContent = el.focal;
+    } else if (el.type === 'solar') {
+      document.getElementById('paramSolar').style.display = 'block';
+      document.getElementById('solarEnergyPer10s').value = el.energyPer10s;
+      document.getElementById('solarConversion').value = el.conversionEnergy;
+      document.getElementById('solarHp').value = el.hp;
+    } else if (el.type === 'attack_tower') {
+      document.getElementById('paramAttack').style.display = 'block';
+      document.getElementById('attackAngle').value = el.angle;
+      document.getElementById('attackAngleVal').textContent = el.angle + '°';
+      document.getElementById('attackHp').value = el.hp;
+    } else if (el.type === 'beacon') {
+      document.getElementById('paramBeacon').style.display = 'block';
+      document.getElementById('beaconActivation').value = el.activationThreshold;
+    } else {
+      panel.classList.remove('visible');
+    }
+  }
+
+  function applyParamChange(type, key, val) {
+    if (!state.selectedCell) return;
+    const k = cellKey(state.selectedCell.x, state.selectedCell.y);
+    const el = state.cells[k];
+    if (!el || el.type !== type) return;
+    el[key] = val;
+    render();
+  }
+
+  function applyPlayerParam(key, val) {
+    const p = state.players.find(pl => pl.id === state.selectedPlayerId);
+    if (!p) return;
+    p[key] = val;
+    render();
+  }
+
+  // ── Place element ──
+  function placeAt(x, y) {
+    if (x < 0 || x >= state.gridSize || y < 0 || y >= state.gridSize) return;
+
+    const tool = state.currentTool;
+
+    if (tool.startsWith('player_')) {
+      const pid = parseInt(tool.split('_')[1], 10);
+      const p = state.players.find(pl => pl.id === pid);
+      if (!p) return;
+
+      const occupiedByOther = state.players.some(pl => pl.id !== pid && pl.x === x && pl.y === y);
+      if (occupiedByOther) return;
+
+      delete state.cells[cellKey(x, y)];
+      p.x = x;
+      p.y = y;
+
+      state.selectedCell = null;
+      state.selectedPlayerId = pid;
+      updateParamsPanel();
+      render();
+      return;
+    }
+
+    if (isPlayerTowerCell(x, y)) return;
+
+    const key = cellKey(x, y);
+
+    if (tool === 'eraser') {
+      delete state.cells[key];
+      if (state.selectedCell && state.selectedCell.x === x && state.selectedCell.y === y) {
+        clearSelection();
+      }
+      render();
+      return;
+    }
+
+    const el = { type: tool, x, y };
+
+    if (tool === 'mirror') Object.assign(el, { ...DEFAULT_PARAMS.mirror });
+    if (tool === 'lens') Object.assign(el, { ...DEFAULT_PARAMS.lens });
+    if (tool === 'solar') {
+      Object.assign(el, { ...DEFAULT_PARAMS.solar });
+      el.hp = state.defaultHp.solar;
+    }
+    if (tool === 'attack_tower') {
+      Object.assign(el, { ...DEFAULT_PARAMS.attack_tower });
+      el.hp = state.defaultHp.attack_tower;
+    }
+    if (tool === 'wall') {
+      el.hp = state.defaultHp.wall;
+    }
+    if (tool === 'beacon') {
+      Object.assign(el, { ...DEFAULT_PARAMS.beacon });
+      el.activationThreshold = state.defaultBeaconActivation;
+    }
+
+    state.cells[key] = el;
+    state.selectedPlayerId = null;
+    state.selectedCell = { x, y };
+    updateParamsPanel();
+    render();
+  }
+
+  // ── Canvas sizing ──
+  function resizeCanvas() {
+    const size = state.gridSize * state.cellSize;
+    canvas.width = size;
+    canvas.height = size;
+    canvas.style.width = size * state.zoom + 'px';
+    canvas.style.height = size * state.zoom + 'px';
+    render();
+  }
+
+  function countBeacons() {
+    return Object.values(state.cells).filter(el => el.type === 'beacon').length;
+  }
+
+  function updateBeaconCount() {
+    document.getElementById('beaconCount').textContent = '信标: ' + countBeacons();
+  }
+
+  // ── Rendering ──
+  function render() {
+    const cs = state.cellSize;
+    const gs = state.gridSize;
+    const W = gs * cs;
+
+    ctx.clearRect(0, 0, W, W);
+
+    // Background
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, W, W);
+
+    // Visibility circles (behind grid)
+    state.players.forEach(p => {
+      const cx = p.x * cs + cs / 2;
+      const cy = p.y * cs + cs / 2;
+      const r = state.visibility * cs;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fillStyle = hexToRgba(p.color, 0.08);
+      ctx.fill();
+      ctx.strokeStyle = hexToRgba(p.color, 0.25);
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    });
+
+    // Grid lines
+    ctx.strokeStyle = '#2a2a2a';
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= gs; i++) {
+      ctx.beginPath();
+      ctx.moveTo(i * cs, 0);
+      ctx.lineTo(i * cs, W);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(0, i * cs);
+      ctx.lineTo(W, i * cs);
+      ctx.stroke();
+    }
+
+    // Map elements
+    for (const key of Object.keys(state.cells)) {
+      const el = state.cells[key];
+      drawElement(el);
+    }
+
+    // Lens focus circle when selected
+    if (state.selectedCell) {
+      const selEl = state.cells[cellKey(state.selectedCell.x, state.selectedCell.y)];
+      if (selEl && selEl.type === 'lens') {
+        const lcx = selEl.x * cs + cs / 2;
+        const lcy = selEl.y * cs + cs / 2;
+        const focusR = selEl.focal * cs;
+        ctx.beginPath();
+        ctx.arc(lcx, lcy, focusR, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(103, 232, 249, 0.06)';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(103, 232, 249, 0.65)';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([5, 4]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+
+    // Player towers (on top)
+    state.players.forEach(p => drawPlayerTower(p));
+
+    // Selection highlight
+    if (state.selectedCell) {
+      const { x, y } = state.selectedCell;
+      ctx.strokeStyle = '#58a6ff';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x * cs + 1, y * cs + 1, cs - 2, cs - 2);
+    }
+    if (state.selectedPlayerId) {
+      const p = state.players.find(pl => pl.id === state.selectedPlayerId);
+      if (p) {
+        ctx.strokeStyle = p.color;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(p.x * cs + 1, p.y * cs + 1, cs - 2, cs - 2);
+      }
+    }
+
+    updateBeaconCount();
+  }
+
+  function hexToRgba(hex, alpha) {
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    return `rgba(${r},${g},${b},${alpha})`;
+  }
+
+  function drawElement(el) {
+    const cs = state.cellSize;
+    const x = el.x * cs;
+    const y = el.y * cs;
+    const cx = x + cs / 2;
+    const cy = y + cs / 2;
+    const pad = cs * 0.12;
+
+    switch (el.type) {
+      case 'wall':
+        ctx.fillStyle = '#4a4a4a';
+        ctx.fillRect(x + pad, y + pad, cs - pad * 2, cs - pad * 2);
+        ctx.fillStyle = '#888';
+        ctx.font = `bold ${cs * 0.35}px sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('■', cx, cy);
+        break;
+
+      case 'mirror':
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate((el.angle * Math.PI) / 180);
+        ctx.fillStyle = '#c0d8f0';
+        ctx.strokeStyle = '#58a6ff';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        const s = cs * 0.32;
+        ctx.moveTo(0, -s);
+        ctx.lineTo(s, 0);
+        ctx.lineTo(0, s);
+        ctx.lineTo(-s, 0);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        // Mirror surface line
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(-s * 0.7, -s * 0.7);
+        ctx.lineTo(s * 0.7, s * 0.7);
+        ctx.stroke();
+        ctx.restore();
+        break;
+
+      case 'lens':
+        ctx.strokeStyle = '#67e8f9';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.ellipse(cx - cs * 0.1, cy, cs * 0.22, cs * 0.32, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.ellipse(cx + cs * 0.1, cy, cs * 0.22, cs * 0.32, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = '#67e8f933';
+        ctx.beginPath();
+        ctx.arc(cx, cy, cs * 0.28, 0, Math.PI * 2);
+        ctx.fill();
+        break;
+
+      case 'solar':
+        ctx.fillStyle = '#1a1a00';
+        ctx.fillRect(x + pad, y + pad, cs - pad * 2, cs - pad * 2);
+        ctx.fillStyle = '#fbbf24';
+        ctx.font = `${cs * 0.38}px sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('☀', cx, cy - cs * 0.12);
+        ctx.fillStyle = '#aaa';
+        ctx.font = `${cs * 0.15}px sans-serif`;
+        ctx.fillText(el.energyPer10s + 'J/10s', cx, cy + cs * 0.1);
+        ctx.fillText('→' + el.conversionEnergy + 'J', cx, cy + cs * 0.28);
+        break;
+
+      case 'lead':
+        ctx.fillStyle = '#2d2d2d';
+        ctx.fillRect(x + pad, y + pad, cs - pad * 2, cs - pad * 2);
+        ctx.strokeStyle = '#666';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x + pad, y + pad, cs - pad * 2, cs - pad * 2);
+        ctx.fillStyle = '#999';
+        ctx.font = `bold ${cs * 0.35}px sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('▣', cx, cy);
+        break;
+
+      case 'attack_tower':
+        drawTower(cx, cy, cs, el.angle, '#e2e8f0', '#94a3b8');
+        ctx.fillStyle = '#fbbf24';
+        ctx.font = `${cs * 0.22}px sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('⚔', cx, cy - cs * 0.05);
+        break;
+
+      case 'beacon':
+        drawBeacon(cx, cy, cs, el.activationThreshold);
+        break;
+    }
+  }
+
+  function drawBeacon(cx, cy, cs, threshold) {
+    const r = cs * 0.34;
+    ctx.strokeStyle = 'rgba(168, 85, 247, 0.35)';
+    ctx.lineWidth = 1;
+    for (let i = 1; i <= 2; i++) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, r + i * cs * 0.08, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.fillStyle = 'rgba(168, 85, 247, 0.2)';
+    ctx.strokeStyle = '#c084fc';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - r);
+    ctx.lineTo(cx + r * 0.55, cy);
+    ctx.lineTo(cx, cy + r);
+    ctx.lineTo(cx - r * 0.55, cy);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#e9d5ff';
+    ctx.font = `bold ${cs * 0.24}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('📡', cx, cy - cs * 0.02);
+    ctx.fillStyle = '#c4b5fd';
+    ctx.font = `${cs * 0.14}px sans-serif`;
+    ctx.fillText('≥' + threshold + 'J', cx, cy + cs * 0.3);
+  }
+
+  function drawPlayerTower(p) {
+    const cs = state.cellSize;
+    const cx = p.x * cs + cs / 2;
+    const cy = p.y * cs + cs / 2;
+    drawTower(cx, cy, cs, p.angle, p.color, p.color);
+    ctx.fillStyle = '#fff';
+    ctx.font = `bold ${cs * 0.22}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('P' + p.id, cx, cy);
+  }
+
+  function drawTower(cx, cy, cs, angle, fillColor, strokeColor) {
+    const r = cs * 0.32;
+    ctx.fillStyle = fillColor + '44';
+    ctx.strokeStyle = strokeColor;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // Direction arrow
+    const rad = (angle * Math.PI) / 180;
+    const arrowLen = cs * 0.38;
+    const ax = cx + Math.cos(rad) * arrowLen;
+    const ay = cy + Math.sin(rad) * arrowLen;
+    ctx.strokeStyle = strokeColor;
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(ax, ay);
+    ctx.stroke();
+
+    // Arrowhead
+    const headLen = cs * 0.12;
+    const a1 = rad + Math.PI * 0.8;
+    const a2 = rad - Math.PI * 0.8;
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(ax + Math.cos(a1) * headLen, ay + Math.sin(a1) * headLen);
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(ax + Math.cos(a2) * headLen, ay + Math.sin(a2) * headLen);
+    ctx.stroke();
+  }
+
+  // ── Mouse interaction ──
+  const SELECTABLE_TYPES = ['wall', 'mirror', 'lens', 'solar', 'attack_tower', 'beacon'];
+  let dragStart = null;
+  let didDrag = false;
+
+  function getGridPos(e) {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const px = (e.clientX - rect.left) * scaleX;
+    const py = (e.clientY - rect.top) * scaleY;
+    const x = Math.floor(px / state.cellSize);
+    const y = Math.floor(py / state.cellSize);
+    return { x, y };
+  }
+
+  function trySelectCell(x, y) {
+    if (x < 0 || x >= state.gridSize || y < 0 || y >= state.gridSize) return false;
+
+    const player = state.players.find(p => p.x === x && p.y === y);
+    if (player) {
+      selectTool(`player_${player.id}`);
+      state.selectedPlayerId = player.id;
+      updateParamsPanel();
+      render();
+      return true;
+    }
+
+    const el = state.cells[cellKey(x, y)];
+    if (el && SELECTABLE_TYPES.includes(el.type)) {
+      state.selectedPlayerId = null;
+      state.selectedCell = { x, y };
+      updateParamsPanel();
+      render();
+      return true;
+    }
+
+    return false;
+  }
+
+  canvas.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    const { x, y } = getGridPos(e);
+    dragStart = { x, y };
+    didDrag = false;
+    state.isDrawing = true;
+  });
+
+  canvas.addEventListener('mousemove', (e) => {
+    const { x, y } = getGridPos(e);
+    document.getElementById('mouseCoords').textContent =
+      x >= 0 && x < state.gridSize && y >= 0 && y < state.gridSize
+        ? `(${x}, ${y})` : '—';
+
+    if (state.isDrawing && dragStart) {
+      if (x !== dragStart.x || y !== dragStart.y) {
+        if (!didDrag) {
+          didDrag = true;
+          if (!state.currentTool.startsWith('player_')) {
+            handleCellAction(dragStart.x, dragStart.y);
+          }
+        }
+        if (!state.currentTool.startsWith('player_')) {
+          handleCellAction(x, y);
+        }
+      }
+    }
+  });
+
+  window.addEventListener('mouseup', () => {
+    if (state.isDrawing && dragStart) {
+      const { x, y } = dragStart;
+      if (!didDrag) {
+        if (state.currentTool.startsWith('player_')) {
+          placeAt(x, y);
+        } else {
+          const el = state.cells[cellKey(x, y)];
+          const sameToolSelect = el && SELECTABLE_TYPES.includes(el.type) &&
+            state.currentTool === el.type;
+          const playerHere = state.players.find(p => p.x === x && p.y === y);
+          if (playerHere && state.currentTool === `player_${playerHere.id}`) {
+            state.selectedCell = null;
+            state.selectedPlayerId = playerHere.id;
+            updateParamsPanel();
+            render();
+          } else if (sameToolSelect) {
+            trySelectCell(x, y);
+          } else {
+            handleCellAction(x, y);
+          }
+        }
+      }
+    }
+    state.isDrawing = false;
+    dragStart = null;
+  });
+
+  canvas.addEventListener('mouseleave', () => {
+    state.isDrawing = false;
+    dragStart = null;
+    document.getElementById('mouseCoords').textContent = '—';
+  });
+
+  function handleCellAction(x, y) {
+    if (x < 0 || x >= state.gridSize || y < 0 || y >= state.gridSize) return;
+    if (state.currentTool.startsWith('player_')) return;
+    placeAt(x, y);
+  }
+
+  // ── Settings bindings ──
+  function bindRange(id, valId, key, onChange) {
+    const input = document.getElementById(id);
+    const valEl = document.getElementById(valId);
+    input.addEventListener('input', () => {
+      const v = parseInt(input.value);
+      state[key] = v;
+      if (valEl) valEl.textContent = v;
+      if (onChange) onChange(v);
+      else { resizeCanvas(); render(); }
+    });
+  }
+
+  bindRange('gridSize', 'gridSizeVal', 'gridSize', (v) => {
+    // Clamp player positions
+    state.players.forEach((p, i) => {
+      if (p.x >= v) p.x = v - 1;
+      if (p.y >= v) p.y = v - 1;
+      const def = getDefaultPlayerPos(i, state.playerCount, v);
+      if (p.x < 0) { p.x = def.x; p.y = def.y; }
+    });
+    // Remove out-of-bounds cells
+    for (const key of Object.keys(state.cells)) {
+      const [cx, cy] = key.split(',').map(Number);
+      if (cx >= v || cy >= v) delete state.cells[key];
+    }
+    resizeCanvas();
+    render();
+  });
+
+  bindRange('cellSize', 'cellSizeVal', 'cellSize', () => resizeCanvas());
+  bindRange('visibility', 'visibilityVal', 'visibility', () => render());
+
+  bindRange('playerCount', 'playerCountVal', 'playerCount', (v) => {
+    initPlayers(v);
+    buildToolbar();
+    selectTool(state.currentTool.startsWith('player_') ? 'wall' : state.currentTool);
+  });
+
+  document.getElementById('initialEnergy').addEventListener('input', (e) => {
+    state.initialEnergy = Math.max(1, parseInt(e.target.value, 10) || 100);
+  });
+
+  function bindDefaultHp(id, key) {
+    document.getElementById(id).addEventListener('input', (e) => {
+      state.defaultHp[key] = Math.max(1, parseInt(e.target.value, 10) || 1);
+    });
+  }
+
+  bindDefaultHp('defaultHpPlayer', 'player_tower');
+  bindDefaultHp('defaultHpAttack', 'attack_tower');
+  bindDefaultHp('defaultHpSolar', 'solar');
+  bindDefaultHp('defaultHpWall', 'wall');
+
+  document.getElementById('defaultBeaconActivation').addEventListener('input', (e) => {
+    state.defaultBeaconActivation = Math.max(1, parseInt(e.target.value, 10) || 10);
+  });
+
+  document.getElementById('winCaptureBeacons').addEventListener('change', (e) => {
+    state.winConditions.captureAllBeacons = e.target.checked;
+  });
+
+  document.getElementById('winDestroyTower').addEventListener('change', (e) => {
+    state.winConditions.destroyEnemyMainTower = e.target.checked;
+  });
+
+  // Param controls
+  document.getElementById('mirrorAngle').addEventListener('input', (e) => {
+    const v = parseInt(e.target.value, 10);
+    document.getElementById('mirrorAngleVal').textContent = v + '°';
+    applyParamChange('mirror', 'angle', v);
+  });
+
+  document.getElementById('lensFocal').addEventListener('input', (e) => {
+    const v = parseInt(e.target.value, 10);
+    document.getElementById('lensFocalVal').textContent = v;
+    applyParamChange('lens', 'focal', v);
+  });
+
+  document.getElementById('solarEnergyPer10s').addEventListener('input', (e) => {
+    applyParamChange('solar', 'energyPer10s', Math.max(0, parseInt(e.target.value, 10) || 0));
+  });
+
+  document.getElementById('solarConversion').addEventListener('input', (e) => {
+    applyParamChange('solar', 'conversionEnergy', Math.max(0, parseInt(e.target.value, 10) || 0));
+  });
+
+  document.getElementById('solarHp').addEventListener('input', (e) => {
+    applyParamChange('solar', 'hp', Math.max(1, parseInt(e.target.value, 10) || 1));
+  });
+
+  document.getElementById('wallHp').addEventListener('input', (e) => {
+    applyParamChange('wall', 'hp', Math.max(1, parseInt(e.target.value, 10) || 1));
+  });
+
+  document.getElementById('attackAngle').addEventListener('input', (e) => {
+    const v = parseInt(e.target.value, 10);
+    document.getElementById('attackAngleVal').textContent = v + '°';
+    applyParamChange('attack_tower', 'angle', v);
+  });
+
+  document.getElementById('attackHp').addEventListener('input', (e) => {
+    applyParamChange('attack_tower', 'hp', Math.max(1, parseInt(e.target.value, 10) || 1));
+  });
+
+  document.getElementById('playerHp').addEventListener('input', (e) => {
+    applyPlayerParam('hp', Math.max(1, parseInt(e.target.value, 10) || 1));
+  });
+
+  document.getElementById('beaconActivation').addEventListener('input', (e) => {
+    applyParamChange('beacon', 'activationThreshold', Math.max(1, parseInt(e.target.value, 10) || 1));
+  });
+
+  // ── Zoom ──
+  function setZoom(z) {
+    state.zoom = Math.max(0.25, Math.min(3, z));
+    const size = state.gridSize * state.cellSize;
+    canvas.style.width = size * state.zoom + 'px';
+    canvas.style.height = size * state.zoom + 'px';
+    document.getElementById('zoomLabel').textContent = Math.round(state.zoom * 100) + '%';
+  }
+
+  document.getElementById('zoomIn').addEventListener('click', () => setZoom(state.zoom + 0.1));
+  document.getElementById('zoomOut').addEventListener('click', () => setZoom(state.zoom - 0.1));
+  document.getElementById('zoomReset').addEventListener('click', () => setZoom(1));
+
+  canvasWrap.addEventListener('wheel', (e) => {
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      setZoom(state.zoom + (e.deltaY < 0 ? 0.05 : -0.05));
+    }
+  }, { passive: false });
+
+  // ── Export ──
+  document.getElementById('exportBtn').addEventListener('click', exportJSON);
+
+  function exportJSON() {
+    const elements = Object.values(state.cells).map(el => {
+      const base = { type: el.type, x: el.x, y: el.y };
+      if (el.type === 'mirror') return { ...base, angle: el.angle };
+      if (el.type === 'lens') return { ...base, focal: el.focal };
+      if (el.type === 'solar') {
+        return {
+          ...base,
+          energyPer10s: el.energyPer10s,
+          conversionEnergy: el.conversionEnergy,
+          hp: el.hp,
+        };
+      }
+      if (el.type === 'attack_tower') return { ...base, angle: el.angle, hp: el.hp };
+      if (el.type === 'wall') return { ...base, hp: el.hp };
+      if (el.type === 'beacon') return { ...base, activationThreshold: el.activationThreshold };
+      return base;
+    });
+
+    const beacons = elements.filter(el => el.type === 'beacon');
+
+    const data = {
+      version: '1.2',
+      meta: {
+        name: 'PhyFog Map',
+        createdAt: new Date().toISOString(),
+        editor: 'map-editor.html',
+      },
+      settings: {
+        gridSize: state.gridSize,
+        cellSize: state.cellSize,
+        initialEnergy: state.initialEnergy,
+        visibilityRange: state.visibility,
+        playerCount: state.playerCount,
+        defaultHp: { ...state.defaultHp },
+        defaultBeaconActivation: state.defaultBeaconActivation,
+        winConditions: { ...state.winConditions },
+      },
+      beacons: beacons.map(b => ({
+        x: b.x,
+        y: b.y,
+        activationThreshold: b.activationThreshold,
+      })),
+      beaconRules: {
+        activation: '可见光照射能量 >= activationThreshold 时激活并占领',
+        capture: '已被占领时，对手可见光能量更高则夺取归属',
+      },
+      players: state.players.map(p => ({
+        id: p.id,
+        x: p.x,
+        y: p.y,
+        angle: p.angle,
+        hp: p.hp,
+        color: p.color,
+      })),
+      elements,
+      elementDescriptions: {
+        wall: '吸收所有光，除了γ射线',
+        mirror: '平面镜，可调角度，不反射γ射线',
+        lens: '透镜，可调焦距，不影响γ射线',
+        solar: '太阳能板，每十秒产能量与转化能量',
+        lead: '铅板，阻挡所有光',
+        attack_tower: '进攻塔，可占领切换发射视角',
+        beacon: '信标，可见光激活，高能量夺取，占满所有信标可获胜',
+      },
+      winConditions: {
+        captureAllBeacons: state.winConditions.captureAllBeacons,
+        destroyEnemyMainTower: state.winConditions.destroyEnemyMainTower,
+        description: '占据地图上所有信标，或摧毁对方主光塔即可获胜',
+      },
+    };
+
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `phyfog-map-${state.gridSize}x${state.gridSize}-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // ── Init ──
+  function init() {
+    initPlayers(state.playerCount);
+    buildToolbar();
+    selectTool('wall');
+    resizeCanvas();
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>

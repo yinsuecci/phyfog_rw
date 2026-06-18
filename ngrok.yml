@@ -1,0 +1,9 @@
+# PhyFog ngrok 配置
+# 使用前：在 https://dashboard.ngrok.com 注册并设置环境变量 NGROK_AUTHTOKEN
+version: "2"
+authtoken_from_env: true
+tunnels:
+  phyfog:
+    proto: http
+    addr: 3000
+    inspect: true
