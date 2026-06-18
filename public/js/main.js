@@ -533,10 +533,13 @@ function getDisplayGameTime() {
 
 function applyServerState(state) {
   if (!game || !state) return;
-  const seqNewer = state.stateSeq == null || state.stateSeq > lastStateSeq;
-  const timeNewer = state.serverTime == null || state.serverTime >= lastServerWallTime;
-  if (!seqNewer && !timeNewer) return;
-  if (state.stateSeq != null) lastStateSeq = state.stateSeq;
+  // 只接受递增的 stateSeq，避免同毫秒内的旧包因 serverTime 相同被误应用并覆盖操作
+  if (state.stateSeq != null) {
+    if (state.stateSeq <= lastStateSeq) return;
+    lastStateSeq = state.stateSeq;
+  } else if (state.serverTime != null && state.serverTime < lastServerWallTime) {
+    return;
+  }
   if (state.serverTime != null) lastServerWallTime = state.serverTime;
   game.applyState(state);
   lastServerGameTime = state.gameTime ?? game.gameTime;
@@ -556,6 +559,7 @@ net.on('game:start', (data) => {
 
   });
 
+  net.roomJoined = true;
   localPlayerIdx = resolveLocalPlayerIdx(data.players);
 
   lastStateSeq = 0;
@@ -585,6 +589,7 @@ net.on('game:rejoin', (data) => {
 
   });
 
+  net.roomJoined = true;
   localPlayerIdx = resolveLocalPlayerIdx(data.players);
 
   lastStateSeq = 0;
