@@ -1,6 +1,6 @@
 /**
 
- * main.js — 大厅、游戏循环、输入、服务器同步
+ * main.js — 大厅、渲染循环、输入；游戏计算由服务器完成，客户端只收 game:state
 
  */
 
@@ -56,6 +56,7 @@ let towerListDirty = true;
 
 let rejoinAttempted = false;
 let lastStateRecvAt = 0;
+let lastStateSeq = 0;
 
 /** 大厅席位在线状态 { playerIndex, nickname, disconnected } */
 let roomPlayerStatus = [];
@@ -519,6 +520,18 @@ net.on('lobby:update', (data) => {
 
 
 
+function applyServerState(state) {
+  if (!game || !state) return;
+  if (state.stateSeq != null && state.stateSeq <= lastStateSeq) return;
+  if (state.stateSeq != null) lastStateSeq = state.stateSeq;
+  game.applyState(state);
+  lastStateRecvAt = Date.now();
+  setSyncOverlay(false);
+  $('#pauseOverlay').classList.toggle('hidden', !game.paused);
+  towerListDirty = true;
+  updateStatusBar();
+}
+
 net.on('game:start', (data) => {
 
   data.players.forEach(p => {
@@ -529,6 +542,8 @@ net.on('game:start', (data) => {
 
   localPlayerIdx = resolveLocalPlayerIdx(data.players);
 
+  lastStateSeq = 0;
+
   setSyncOverlay(false);
 
   syncRoomPlayerStatus(data.players);
@@ -536,9 +551,7 @@ net.on('game:start', (data) => {
   startGame(data.mapData, data.players);
 
   if (data.state) {
-    game.applyState(data.state);
-    lastStateRecvAt = Date.now();
-    towerListDirty = true;
+    applyServerState(data.state);
   }
 
 });
@@ -555,6 +568,8 @@ net.on('game:rejoin', (data) => {
 
   localPlayerIdx = resolveLocalPlayerIdx(data.players);
 
+  lastStateSeq = 0;
+
   setSyncOverlay(false);
 
   syncRoomPlayerStatus(data.players);
@@ -569,19 +584,17 @@ net.on('game:rejoin', (data) => {
 
   if (data.state) {
 
-    game.applyState(data.state);
-
-    lastStateRecvAt = Date.now();
-
-    towerListDirty = true;
+    applyServerState(data.state);
 
   }
 
   if (data.paused) {
 
-    game.paused = true;
-
     $('#pauseOverlay').classList.remove('hidden');
+
+  } else {
+
+    $('#pauseOverlay').classList.add('hidden');
 
   }
 
@@ -597,23 +610,13 @@ net.on('game:rejoin', (data) => {
 
 net.on('game:state', (state) => {
 
-  game?.applyState(state);
-
-  lastStateRecvAt = Date.now();
-
-  setSyncOverlay(false);
-
-  towerListDirty = true;
-
-  updateStatusBar();
+  applyServerState(state);
 
 });
 
 
 
 net.on('game:paused', ({ paused }) => {
-
-  if (game) game.paused = paused;
 
   $('#pauseOverlay').classList.toggle('hidden', !paused);
 
@@ -730,6 +733,8 @@ function stopGameLoop() {
   renderer = null;
 
   lastStateRecvAt = 0;
+
+  lastStateSeq = 0;
 
 }
 
@@ -1180,14 +1185,9 @@ function sendAction(action) {
     return;
   }
 
-  const payload = { ...action, playerIndex: localPlayerIdx };
-
-  if (!net.sendAction(payload)) {
-    toast('操作发送失败，请检查网络', true);
-    return;
-  }
-
-  towerListDirty = true;
+  net.sendAction(action).then((res) => {
+    if (res && !res.ok) toast(res.error || '操作被拒绝', true);
+  });
 
 }
 
@@ -1311,11 +1311,7 @@ bindTap($('#btnPause'), () => {
 
   if (!game) return;
 
-  game.paused = !game.paused;
-
-  net.pauseGame(game.paused);
-
-  $('#pauseOverlay').classList.toggle('hidden', !game.paused);
+  net.pauseGame(!game.paused);
 
 });
 
@@ -1335,11 +1331,7 @@ bindTap($('#btnResume'), () => {
 
   if (!game) return;
 
-  game.paused = false;
-
   net.pauseGame(false);
-
-  $('#pauseOverlay').classList.add('hidden');
 
 });
 

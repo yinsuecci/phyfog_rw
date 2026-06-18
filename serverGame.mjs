@@ -24,22 +24,44 @@ export async function startRoomGame(room) {
   room.gameLogic = new GameLogic(room.mapData, null);
   room.gameLogic.setNicknames(lobbyNicknames(room));
   room.gameLogic.paused = !!room.paused;
+  room.stateSeq = 0;
   room._lastTickMs = Date.now();
-  room.lastGameState = room.gameLogic.serialize();
+  room.lastGameState = buildRoomState(room);
 }
 
 export function stopRoomGame(room) {
   room.gameLogic = null;
   room.lastGameState = null;
   room._lastTickMs = null;
+  room.stateSeq = 0;
+}
+
+function buildRoomState(room) {
+  if (!room.gameLogic) return null;
+  room.stateSeq = (room.stateSeq ?? 0) + 1;
+  return {
+    ...room.gameLogic.serialize(),
+    stateSeq: room.stateSeq,
+    serverTime: Date.now(),
+  };
 }
 
 export function handleRoomAction(room, playerIndex, action) {
   if (!room.gameLogic || !room.gameStarted) {
     return { ok: false, error: '对局未开始' };
   }
+  if (room.paused || room.gameLogic.paused) {
+    return { ok: false, error: '游戏已暂停' };
+  }
+  const player = room.gameLogic.players[playerIndex];
+  if (!player?.alive) {
+    return { ok: false, error: '玩家不可用' };
+  }
+  if (!action?.type) {
+    return { ok: false, error: '无效操作' };
+  }
+
   room.gameLogic.handleAction(playerIndex, action);
-  room.lastGameState = room.gameLogic.serialize();
   return { ok: true };
 }
 
@@ -49,8 +71,8 @@ export function setRoomPaused(room, paused) {
 }
 
 export function broadcastRoomState(io, roomCode, room) {
-  if (!room.gameLogic) return null;
-  const state = room.gameLogic.serialize();
+  const state = buildRoomState(room);
+  if (!state) return null;
   room.lastGameState = state;
   io.to(roomCode).emit('game:state', state);
   return state;

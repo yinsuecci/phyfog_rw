@@ -260,16 +260,25 @@ io.on('connection', (socket) => {
     gameApi.broadcastRoomState(io, currentRoom, room);
   });
 
-  socket.on('game:action', async (action) => {
+  socket.on('game:action', async (action, ack) => {
     const room = rooms.get(currentRoom);
-    if (!room || !room.gameStarted) return;
+    if (!room || !room.gameStarted) {
+      ack?.({ ok: false, error: '未在对局中' });
+      return;
+    }
 
     const playerIndex = getPlayerIndex(room, socket.id);
-    if (playerIndex < 0) return;
+    if (playerIndex < 0) {
+      ack?.({ ok: false, error: '未加入房间' });
+      return;
+    }
 
     const gameApi = await gameApiPromise;
-    gameApi.handleRoomAction(room, playerIndex, action);
-    gameApi.broadcastRoomState(io, currentRoom, room);
+    const result = gameApi.handleRoomAction(room, playerIndex, action);
+    if (result.ok) {
+      gameApi.broadcastRoomState(io, currentRoom, room);
+    }
+    ack?.(result);
   });
 
   socket.on('game:return-lobby', async () => {

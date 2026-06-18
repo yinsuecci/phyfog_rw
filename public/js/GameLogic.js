@@ -1,5 +1,5 @@
 /**
- * GameLogic.js — 游戏状态、视野（二维数组）、战斗、建设、胜负
+ * GameLogic.js — 游戏状态（客户端仅用于渲染；权威计算在服务器 serverGame.mjs）
  */
 import { BANDS, BUILD_COSTS, cellKey, normalizeAngle, INVULNERABLE_TYPES, DEFAULT_FIRE_COOLDOWN } from './constants.js';
 import { RayCaster } from './RayCaster.js';
