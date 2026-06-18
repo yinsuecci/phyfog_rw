@@ -104,16 +104,14 @@ function Get-DefaultUploadItems() {
 function Get-SshScpArgs([object]$cfg) {
     $port = [int]$cfg.sshPort
     if ($port -le 0) { $port = 22 }
-    $controlPath = Join-Path $env:TEMP "phyfog-ssh-$($cfg.sshHost)-$port"
-    $commonOpts = @(
+    # Do not use ControlMaster on Windows — breaks scp (getsockname failed: Not a socket)
+    $baseOpts = @(
         "-o", "StrictHostKeyChecking=accept-new",
-        "-o", "ConnectTimeout=30",
-        "-o", "ControlMaster=auto",
-        "-o", "ControlPath=$controlPath",
-        "-o", "ControlPersist=120"
+        "-o", "ConnectTimeout=30"
     )
-    $sshArgs = @("-p", "$port") + $commonOpts
-    $scpArgs = @("-P", "$port") + $commonOpts
+    $sshArgs = @("-p", "$port") + $baseOpts
+    # -O = legacy scp protocol; more reliable on Windows OpenSSH 9.x
+    $scpArgs = @("-O", "-P", "$port") + $baseOpts
     $keyPath = Resolve-SshKeyPath $cfg
     if ($keyPath) {
         $sshArgs += @("-i", $keyPath)
@@ -122,7 +120,32 @@ function Get-SshScpArgs([object]$cfg) {
     $user = $cfg.sshUser
     if (-not $user) { $user = "root" }
     $target = "$user@$($cfg.sshHost)"
-    return @{ Ssh = $sshArgs; Scp = $scpArgs; Target = $target; KeyPath = $keyPath; ControlPath = $controlPath }
+    return @{ Ssh = $sshArgs; Scp = $scpArgs; Target = $target; KeyPath = $keyPath }
+}
+
+function Invoke-TarPipeUpload([object]$cfg, [string[]]$relItems, [string]$remotePath) {
+    $tar = Get-Command tar -ErrorAction SilentlyContinue
+    if (-not $tar) { return $false }
+
+    $conn = Get-SshScpArgs $cfg
+    $items = @()
+    foreach ($item in $relItems) {
+        if (Test-Path (Join-Path $Root $item)) { $items += $item }
+    }
+    if ($items.Count -eq 0) { return $false }
+
+    $sshTarget = $conn.Target
+    $remoteShell = "mkdir -p '$remotePath' && tar -xzf - -C '$remotePath'"
+    $sshPart = "ssh " + (($conn.Ssh + @($sshTarget, $remoteShell)) | ForEach-Object {
+        if ($_ -match '\s') { "`"$_`"" } else { $_ }
+    }) -join ' '
+    $tarPart = "tar -czf - " + (($items | ForEach-Object { "`"$_`"" }) -join ' ')
+    $cmdLine = "cd /d `"$Root`" && $tarPart | $sshPart"
+
+    Write-Ok "Uploading via tar+ssh (fallback) ..."
+    $result = Invoke-NativeCmd -Exe "cmd.exe" -CommandArgs @("/c", $cmdLine)
+    $result.Output | ForEach-Object { Write-Host "   $_" }
+    return ($result.ExitCode -eq 0)
 }
 
 function Invoke-NativeCmd([string]$Exe, [string[]]$CommandArgs) {
@@ -222,11 +245,19 @@ function Deploy-ServerDirectUpload([object]$cfg) {
     $result = Invoke-NativeCmd -Exe "scp" -CommandArgs $scpArgs
     $result.Output | ForEach-Object { Write-Host "   $_" }
     if ($result.ExitCode -ne 0) {
-        throw "scp batch upload failed"
-    }
-    foreach ($item in $uploadItems) {
-        if (Test-Path (Join-Path $Root $item)) {
-            Write-Ok "  included: $item"
+        Write-Warn "SCP batch failed, trying tar+ssh ..."
+        $relItems = @()
+        foreach ($item in $uploadItems) {
+            if (Test-Path (Join-Path $Root $item)) { $relItems += $item }
+        }
+        if (-not (Invoke-TarPipeUpload $cfg $relItems $remotePath)) {
+            throw "Upload failed (scp and tar+ssh both failed)"
+        }
+    } else {
+        foreach ($item in $uploadItems) {
+            if (Test-Path (Join-Path $Root $item)) {
+                Write-Ok "  included: $item"
+            }
         }
     }
 
@@ -263,14 +294,17 @@ function Push-GitRepo([object]$cfg, [string]$GitExe, [string]$Message) {
 
     Invoke-GitExe $GitExe @("add", "-A") -ExtraArgs $proxyArgs | Out-Null
     $status = & $GitExe @($proxyArgs + @("status", "--porcelain"))
+    $hadChanges = $false
     if ($status) {
         $prefix = $cfg.commitMessagePrefix
         if (-not $prefix) { $prefix = "deploy" }
         if ($Message) { $msg = $Message } else { $msg = "$prefix $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" }
         Invoke-GitExe $GitExe @("commit", "-m", $msg) -ExtraArgs $proxyArgs | Out-Null
         Write-Ok "Committed: $msg"
+        $hadChanges = $true
     } else {
-        Write-Warn "No local changes, skip commit"
+        Write-Warn "No local changes, skip commit and push"
+        return $true
     }
 
     $pushed = Invoke-GitExe $GitExe @("push", $remote, $branch) -AllowFail -ExtraArgs $proxyArgs
