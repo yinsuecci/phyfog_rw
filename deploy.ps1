@@ -75,19 +75,54 @@ function Load-Config {
     return Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json
 }
 
+function Resolve-SshKeyPath([object]$cfg) {
+    if ($cfg.sshKeyPath -and (Test-Path $cfg.sshKeyPath)) {
+        return $cfg.sshKeyPath
+    }
+    $candidates = @(
+        "$env:USERPROFILE\.ssh\id_ed25519",
+        "$env:USERPROFILE\.ssh\id_rsa",
+        "$env:USERPROFILE\.ssh\id_ed25519_phyfog"
+    )
+    foreach ($p in $candidates) {
+        if (Test-Path $p) { return $p }
+    }
+    return $null
+}
+
+function Get-DefaultUploadItems() {
+    return @(
+        "public",
+        "server.js",
+        "serverGame.mjs",
+        "package.json",
+        "package-lock.json",
+        "map-editor.html"
+    )
+}
+
 function Get-SshScpArgs([object]$cfg) {
     $port = [int]$cfg.sshPort
     if ($port -le 0) { $port = 22 }
-    $sshArgs = @("-p", "$port", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=30")
-    $scpArgs = @("-P", "$port", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=30")
-    if ($cfg.sshKeyPath -and (Test-Path $cfg.sshKeyPath)) {
-        $sshArgs += @("-i", $cfg.sshKeyPath)
-        $scpArgs += @("-i", $cfg.sshKeyPath)
+    $controlPath = Join-Path $env:TEMP "phyfog-ssh-$($cfg.sshHost)-$port"
+    $commonOpts = @(
+        "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "ConnectTimeout=30",
+        "-o", "ControlMaster=auto",
+        "-o", "ControlPath=$controlPath",
+        "-o", "ControlPersist=120"
+    )
+    $sshArgs = @("-p", "$port") + $commonOpts
+    $scpArgs = @("-P", "$port") + $commonOpts
+    $keyPath = Resolve-SshKeyPath $cfg
+    if ($keyPath) {
+        $sshArgs += @("-i", $keyPath)
+        $scpArgs += @("-i", $keyPath)
     }
     $user = $cfg.sshUser
     if (-not $user) { $user = "root" }
     $target = "$user@$($cfg.sshHost)"
-    return @{ Ssh = $sshArgs; Scp = $scpArgs; Target = $target }
+    return @{ Ssh = $sshArgs; Scp = $scpArgs; Target = $target; KeyPath = $keyPath; ControlPath = $controlPath }
 }
 
 function Invoke-NativeCmd([string]$Exe, [string[]]$CommandArgs) {
@@ -126,9 +161,15 @@ function Deploy-ServerGitPull([object]$cfg) {
     if (-not $pm2Name) { $pm2Name = "phyfog" }
     $branch = $cfg.gitBranch
     if (-not $branch) { $branch = "master" }
+    $conn = Get-SshScpArgs $cfg
+    if ($conn.KeyPath) {
+        Write-Ok "SSH key: $($conn.KeyPath)"
+    } else {
+        Write-Warn "No SSH key configured. Password may be required."
+    }
 
     $remoteCmd = "set -e; cd '$remotePath'; " +
-        "if [ ! -d .git ]; then echo 'ERROR: run server-init.sh first'; exit 1; fi; " +
+        "if [ ! -d .git ]; then echo 'ERROR: run server-init.sh on server first'; exit 1; fi; " +
         "git fetch origin; git reset --hard origin/$branch; " +
         "npm install --production; " +
         "if pm2 describe $pm2Name >/dev/null 2>&1; then pm2 restart $pm2Name; " +
@@ -155,32 +196,41 @@ function Deploy-ServerDirectUpload([object]$cfg) {
     if (-not $pm2Name) { $pm2Name = "phyfog" }
     $conn = Get-SshScpArgs $cfg
 
-    Invoke-RemoteCmd $cfg "mkdir -p '$remotePath'"
+    if ($conn.KeyPath) {
+        Write-Ok "SSH key: $($conn.KeyPath)"
+    } else {
+        Write-Warn "No SSH key found. You may need to enter the server password 1-2 times."
+        Write-Warn "Tip: run ssh-keygen and set sshKeyPath in deploy.config.json"
+    }
 
-    $uploadItems = @(
-        "public",
-        "server.js",
-        "package.json",
-        "package-lock.json",
-        "map-editor.html"
-    )
+    $uploadItems = Get-DefaultUploadItems
     if ($cfg.extraUploadItems) {
         $uploadItems += @($cfg.extraUploadItems)
     }
 
-    Write-Ok "Uploading files via SCP (no GitHub needed) ..."
+    $localPaths = @()
     foreach ($item in $uploadItems) {
         $local = Join-Path $Root $item
-        if (-not (Test-Path $local)) { continue }
-        $scpArgs = $conn.Scp + @("-r", $local, "$($conn.Target):$remotePath/")
-        $result = Invoke-NativeCmd -Exe "scp" -CommandArgs $scpArgs
-        if ($result.ExitCode -ne 0) {
-            throw "scp failed for $item"
-        }
-        Write-Ok "  uploaded: $item"
+        if (Test-Path $local) { $localPaths += $local }
+    }
+    if ($localPaths.Count -eq 0) {
+        throw "No files to upload"
     }
 
-    $remoteCmd = "set -e; cd '$remotePath'; npm install --production; " +
+    Write-Ok "Uploading $($localPaths.Count) item(s) in one SCP batch ..."
+    $scpArgs = $conn.Scp + @("-r") + $localPaths + @("$($conn.Target):$remotePath/")
+    $result = Invoke-NativeCmd -Exe "scp" -CommandArgs $scpArgs
+    $result.Output | ForEach-Object { Write-Host "   $_" }
+    if ($result.ExitCode -ne 0) {
+        throw "scp batch upload failed"
+    }
+    foreach ($item in $uploadItems) {
+        if (Test-Path (Join-Path $Root $item)) {
+            Write-Ok "  included: $item"
+        }
+    }
+
+    $remoteCmd = "set -e; mkdir -p '$remotePath'; cd '$remotePath'; npm install --production; " +
         "if pm2 describe $pm2Name >/dev/null 2>&1; then pm2 restart $pm2Name; " +
         "else pm2 start server.js --name $pm2Name; fi; " +
         "pm2 save; echo DEPLOY_OK"
