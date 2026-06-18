@@ -33,6 +33,7 @@ function Find-Git {
     $cmd = Get-Command git -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
     $candidates = @(
+        "D:\Git\cmd\git.exe",
         "$env:ProgramFiles\Git\cmd\git.exe",
         "${env:ProgramFiles(x86)}\Git\cmd\git.exe",
         "$env:LOCALAPPDATA\Programs\Git\cmd\git.exe"
@@ -231,7 +232,7 @@ function Push-GitRepo([object]$cfg, [string]$GitExe, [string]$Message) {
 }
 
 Write-Host "========================================" -ForegroundColor Magenta
-Write-Host "  PhyFog Deploy -> rw.udclass.top" -ForegroundColor Magenta
+Write-Host "  PhyFog Deploy" -ForegroundColor Magenta
 Write-Host "========================================" -ForegroundColor Magenta
 
 $cfg = Load-Config
@@ -243,40 +244,25 @@ if ($Direct) { $deployMode = "direct" }
 
 $gitPushOk = $true
 
-# --- 1. Git push (optional) ---
-if (-not $ServerOnly -and -not $cfg.skipGitPush -and $deployMode -ne "direct") {
-    Write-Step "Push to Git repository"
+# --- 1. Git push ---
+if (-not $ServerOnly -and -not $cfg.skipGitPush) {
+    Write-Step "Push to GitHub"
     if (-not $gitExe) {
         Write-Err "Git not found."
-        exit 1
-    }
-    try {
-        $gitPushOk = Push-GitRepo $cfg $gitExe $Message
-    } catch {
         $gitPushOk = $false
-        Write-Warn $_.Exception.Message
-    }
-    if (-not $gitPushOk) {
-        Write-Warn "GitHub unreachable (common in CN). Will use direct upload to server."
-        if (-not $cfg.fallbackDirectDeploy -and $deployMode -eq "git") {
-            if ($cfg.skipServerDeploy) { exit 1 }
+        if ($deployMode -eq "git" -and -not $cfg.fallbackDirectDeploy) { exit 1 }
+    } else {
+        try {
+            $gitPushOk = Push-GitRepo $cfg $gitExe $Message
+        } catch {
+            $gitPushOk = $false
+            Write-Warn $_.Exception.Message
         }
     }
-} elseif (-not $ServerOnly -and -not $cfg.skipGitPush -and $deployMode -eq "direct") {
-    Write-Step "Git commit only (direct deploy mode, skip push)"
-    if ($gitExe) {
-        try {
-            Invoke-GitExe $gitExe @("add", "-A") | Out-Null
-            $status = & $gitExe status --porcelain
-            if ($status) {
-                $prefix = $cfg.commitMessagePrefix
-                if (-not $prefix) { $prefix = "deploy" }
-                if ($Message) { $msg = $Message } else { $msg = "$prefix $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" }
-                Invoke-GitExe $gitExe @("commit", "-m", $msg) | Out-Null
-                Write-Ok "Local commit: $msg (not pushed)"
-            }
-        } catch {
-            Write-Warn "Local git commit skipped: $($_.Exception.Message)"
+    if (-not $gitPushOk) {
+        Write-Warn "GitHub push failed. Server will use direct SCP upload if enabled."
+        if (-not $cfg.fallbackDirectDeploy -and $deployMode -eq "git") {
+            if ($cfg.skipServerDeploy) { exit 1 }
         }
     }
 }
@@ -288,7 +274,16 @@ if (-not $GitOnly -and -not $cfg.skipServerDeploy) {
     if ($deployMode -eq "direct" -or -not $gitPushOk) {
         Deploy-ServerDirectUpload $cfg
     } else {
-        Deploy-ServerGitPull $cfg
+        try {
+            Deploy-ServerGitPull $cfg
+        } catch {
+            if ($cfg.fallbackDirectDeploy) {
+                Write-Warn "Server git pull failed, falling back to SCP upload"
+                Deploy-ServerDirectUpload $cfg
+            } else {
+                throw
+            }
+        }
     }
 }
 
