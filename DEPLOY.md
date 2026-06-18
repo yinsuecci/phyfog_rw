@@ -58,12 +58,79 @@ bash server-init.sh
 
 ## 日常发布
 
-### 方式 A：双击 `一键部署.bat`
+### 推荐：`deployMode: "direct"`（无需访问 GitHub）
 
-自动执行：
+国内网络常无法连接 `github.com:443`。默认已改为 **直连上传**：
 
-1. `git add` → `commit` → `push` 到 `https://github.com/yinsuecci/phyfog_rw.git`
-2. SSH 到 `rw.udclass.top` → `git pull` → `npm install` → `pm2 restart phyfog`
+1. 本地 `git commit`（可选）
+2. 通过 **SCP** 把代码直接传到 `rw.udclass.top`
+3. 服务器 `npm install` + `pm2 restart`
+
+双击 **`一键部署.bat`** 即可。
+
+`deploy.config.json` 关键项：
+
+```json
+{
+  "deployMode": "direct",
+  "sshHost": "rw.udclass.top",
+  "sshKeyPath": "C:\\Users\\你的用户名\\.ssh\\id_ed25519",
+  "fallbackDirectDeploy": true
+}
+```
+
+### 使用代理连接 GitHub（推荐有梯子用户）
+
+编辑 `deploy.config.json`：
+
+```json
+{
+  "deployMode": "git",
+  "gitHttpProxy": "http://127.0.0.1:7890",
+  "fallbackDirectDeploy": true,
+  "sshKeyPath": "C:\\Users\\你的用户名\\.ssh\\id_ed25519",
+  "sshHost": "rw.udclass.top"
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `deployMode` | 设为 `"git"`：先 push GitHub，再服务器 `git pull` |
+| `gitHttpProxy` | 代理地址，常见见下表 |
+| `fallbackDirectDeploy` | push 失败时自动改用 SCP 直连（建议保持 `true`） |
+
+**常见本地代理端口**（在代理软件设置里查看 HTTP 端口）：
+
+| 软件 | 典型 HTTP 代理 |
+|------|----------------|
+| Clash / Clash Verge | `http://127.0.0.1:7890` |
+| v2rayN | `http://127.0.0.1:10809` |
+| Surge | `http://127.0.0.1:6152` |
+
+若只有 SOCKS5 端口（如 `7891`），可填：
+
+```json
+"gitHttpProxy": "socks5://127.0.0.1:7891"
+```
+
+**测试代理是否生效**（PowerShell）：
+
+```powershell
+$env:HTTP_PROXY="http://127.0.0.1:7890"
+$env:HTTPS_PROXY="http://127.0.0.1:7890"
+git ls-remote https://github.com/yinsuecci/phyfog_rw.git
+```
+
+能列出远程分支即表示 GitHub 已通。
+
+也可全局配置 Git（可选，不必与 deploy 重复）：
+
+```powershell
+git config --global http.proxy http://127.0.0.1:7890
+git config --global https.proxy http://127.0.0.1:7890
+```
+
+### 若能访问 GitHub（deploy.config 摘要）
 
 ### 方式 B：生成真正的 `.exe`
 

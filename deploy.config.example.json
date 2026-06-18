@@ -1,13 +1,17 @@
 {
+  "deployMode": "git",
   "gitBranch": "master",
   "gitRemote": "origin",
+  "gitPushUrl": "",
+  "gitHttpProxy": "http://127.0.0.1:7890",
   "commitMessagePrefix": "deploy",
   "sshHost": "rw.udclass.top",
   "sshUser": "root",
   "sshPort": 22,
-  "sshKeyPath": "C:\\Users\\你的用户名\\.ssh\\id_rsa",
+  "sshKeyPath": "C:\\Users\\你的用户名\\.ssh\\id_ed25519",
   "remotePath": "/var/www/phyfog",
   "pm2AppName": "phyfog",
   "skipGitPush": false,
-  "skipServerDeploy": false
+  "skipServerDeploy": false,
+  "fallbackDirectDeploy": true
 }
