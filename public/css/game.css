@@ -466,7 +466,13 @@ body {
 
 .slider-row { margin-top: 8px; }
 .slider-row label { font-size: 11px; color: var(--muted); display: block; margin-bottom: 4px; }
-.slider-row input[type="range"] { width: 100%; accent-color: var(--accent); }
+.slider-row input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+  touch-action: none;
+  min-height: 28px;
+  cursor: pointer;
+}
 
 .radio-opt { display: flex; align-items: center; gap: 6px; font-size: 12px; margin: 6px 0; }
 #radioPanel input[type="text"], #radioPanel input[type="number"] {
@@ -538,9 +544,10 @@ body {
   color: var(--text);
   font-size: 18px;
   font-weight: 600;
-  touch-action: manipulation;
+  touch-action: none;
   -webkit-tap-highlight-color: transparent;
   cursor: pointer;
+  user-select: none;
 }
 
 .mobile-controls .touch-btn:active {
@@ -683,6 +690,15 @@ body {
     overflow-y: hidden;
     padding: 8px;
     -webkit-overflow-scrolling: touch;
+    touch-action: pan-x pan-y;
+  }
+
+  .sidebar-block .slider-row {
+    touch-action: none;
+  }
+
+  .sidebar-block .slider-row input[type="range"] {
+    min-height: 36px;
   }
 
   .sidebar-block {

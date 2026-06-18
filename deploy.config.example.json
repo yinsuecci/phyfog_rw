@@ -1,0 +1,13 @@
+{
+  "gitBranch": "master",
+  "gitRemote": "origin",
+  "commitMessagePrefix": "deploy",
+  "sshHost": "rw.udclass.top",
+  "sshUser": "root",
+  "sshPort": 22,
+  "sshKeyPath": "C:\\Users\\你的用户名\\.ssh\\id_rsa",
+  "remotePath": "/var/www/phyfog",
+  "pm2AppName": "phyfog",
+  "skipGitPush": false,
+  "skipServerDeploy": false
+}

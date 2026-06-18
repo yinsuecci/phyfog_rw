@@ -61,6 +61,10 @@ let rejoinAttempted = false;
 /** 大厅席位在线状态 { playerIndex, nickname, disconnected } */
 let roomPlayerStatus = [];
 
+const DISCONNECT_NOTICE_MS = 30000;
+let disconnectNoticeTimer = null;
+let connectionPendingSince = null;
+
 
 
 function getServerUrl() {
@@ -134,13 +138,13 @@ function clearSession() {
 
 
 function connectNetwork() {
-
+  clearDisconnectNoticeTimer();
+  if (!connectionPendingSince) connectionPendingSince = Date.now();
   const url = getServerUrl();
-
   net.connect(url);
-
+  $('#connStatus').textContent = '连接中…';
+  $('#connStatus').className = 'conn-status';
   return url;
-
 }
 
 
@@ -168,42 +172,59 @@ function restoreSessionFields() {
 
 
 restoreSessionFields();
-
-
-
-// 初始化连接
-
+connectionPendingSince = Date.now();
 connectNetwork();
+net.on('connect', onSocketConnected);
+net.on('disconnect', onSocketDisconnected);
+net.on('connect_error', onSocketConnectError);
 
-net.on('connect', () => {
 
+
+function clearDisconnectNoticeTimer() {
+  if (disconnectNoticeTimer) {
+    clearTimeout(disconnectNoticeTimer);
+    disconnectNoticeTimer = null;
+  }
+}
+
+function clearDisconnectNotice() {
+  clearDisconnectNoticeTimer();
+  connectionPendingSince = null;
+}
+
+function scheduleDisconnectNotice(message) {
+  clearDisconnectNoticeTimer();
+  if (!connectionPendingSince) connectionPendingSince = Date.now();
+  const elapsed = Date.now() - connectionPendingSince;
+  const delay = Math.max(0, DISCONNECT_NOTICE_MS - elapsed);
+  disconnectNoticeTimer = setTimeout(() => {
+    if (net.socket?.connected) return;
+    $('#connStatus').textContent = '已断线';
+    $('#connStatus').className = 'conn-status err';
+    toast(message, true);
+  }, delay);
+}
+
+function onSocketConnected() {
+  clearDisconnectNotice();
   $('#connStatus').textContent = '已连接 ' + getServerUrl();
-
   $('#connStatus').className = 'conn-status ok';
-
   tryAutoRejoin();
+}
 
-});
+function onSocketDisconnected() {
+  if (!connectionPendingSince) connectionPendingSince = Date.now();
+  $('#connStatus').textContent = '连接中…';
+  $('#connStatus').className = 'conn-status';
+  scheduleDisconnectNotice('与服务器断线');
+}
 
-net.on('disconnect', () => {
-
-  $('#connStatus').textContent = '已断线';
-
-  $('#connStatus').className = 'conn-status err';
-
-  toast('与服务器断线', true);
-
-});
-
-net.on('connect_error', (d) => {
-
-  $('#connStatus').textContent = '连接失败';
-
-  $('#connStatus').className = 'conn-status err';
-
-  toast('无法连接服务器: ' + (d?.message || ''), true);
-
-});
+function onSocketConnectError(d) {
+  if (!connectionPendingSince) connectionPendingSince = Date.now();
+  $('#connStatus').textContent = '连接中…';
+  $('#connStatus').className = 'conn-status';
+  scheduleDisconnectNotice('无法连接服务器: ' + (d?.message || ''));
+}
 
 
 
@@ -903,15 +924,9 @@ function updateStatusBar() {
     const ownerLabel = owner ? `P${b.owner + 1}` : '中立';
 
     chip.innerHTML = `
-
       <span class="beacon-dot" style="background:${dotColor}"></span>
-
       <span>信标${idx + 1}</span>
-
-      <span style="color:var(--muted)">(${b.x},${b.y})</span>
-
-      <span style="color:${owner ? owner.color : 'var(--muted)'}">${ownerLabel}</span>
-
+      <span style="color:${owner ? owner.color : 'var(--muted)'}">${owner ? (owner.nickname || ownerLabel) : '中立'}</span>
     `;
 
     beaconsBox.appendChild(chip);
@@ -982,26 +997,29 @@ function buildBandUI() {
 
   });
 
-  $('#visibleEnergy').addEventListener('input', (e) => {
+}
 
+
+
+function initControlSliders() {
+  bindRangeSlider($('#visibleEnergy'), (e) => {
     visibleEnergy = parseInt(e.target.value, 10);
-
     const names = ['红', '橙', '黄', '绿', '蓝', '靛', '紫', '紫+', '紫++', '高紫'];
-
     $('#visibleEnergyVal').textContent = visibleEnergy + 'J ' + (names[visibleEnergy - 1] || '');
-
   });
-
-  $('#radioMsg').addEventListener('input', (e) => { radioMessage = e.target.value; });
-
-  $('#radioEnergyAmt').addEventListener('input', (e) => { radioEnergyAmount = parseInt(e.target.value, 10) || 0; });
-
+  bindRangeSlider($('#buildEnergy'), (e) => {
+    buildEnergyInput = parseInt(e.target.value, 10) || 10;
+    $('#buildEnergyVal').textContent = buildEnergyInput + 'J';
+  });
+  bindRangeSlider($('#mirrorBuildAngle'), (e) => {
+    mirrorBuildAngle = parseInt(e.target.value, 10) || 0;
+    $('#mirrorBuildAngleVal').textContent = mirrorBuildAngle + '°';
+  });
+  $('#radioMsg')?.addEventListener('input', (e) => { radioMessage = e.target.value; });
+  $('#radioEnergyAmt')?.addEventListener('input', (e) => { radioEnergyAmount = parseInt(e.target.value, 10) || 0; });
   $$('input[name="radioMode"]').forEach(r => {
-
     r.addEventListener('change', () => { radioMode = r.value; });
-
   });
-
 }
 
 
@@ -1042,46 +1060,57 @@ function buildBuildUI() {
 
   });
 
-  $('#buildEnergy').addEventListener('input', (e) => {
-
-    buildEnergyInput = parseInt(e.target.value, 10) || 10;
-
-    $('#buildEnergyVal').textContent = buildEnergyInput + 'J';
-
-  });
-
-  $('#mirrorBuildAngle').addEventListener('input', (e) => {
-
-    mirrorBuildAngle = parseInt(e.target.value, 10) || 0;
-
-    $('#mirrorBuildAngleVal').textContent = mirrorBuildAngle + '°';
-
-  });
-
 }
 
 
 
 // ── Input ──
 
-/** 移动端可靠点击（touchend + 去重 click） */
+/** 按钮点按（鼠标 + 触控） */
 function bindTap(el, handler) {
   if (!el) return;
-  let lastTouchAt = 0;
-  el.addEventListener('touchend', (e) => {
+  el.addEventListener('pointerup', (e) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
-    lastTouchAt = Date.now();
-    handler(e);
-  }, { passive: false });
-  el.addEventListener('click', (e) => {
-    if (Date.now() - lastTouchAt < 450) {
-      e.preventDefault();
-      e.stopPropagation();
-      return;
-    }
     handler(e);
   });
+}
+
+/** 长按连续触发（旋转炮台） */
+function bindHold(el, handler, intervalMs = 80) {
+  if (!el) return;
+  let timer = null;
+  const tick = (e) => {
+    e.preventDefault();
+    handler(e);
+  };
+  const start = (e) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    tick(e);
+    timer = setInterval(() => handler(e), intervalMs);
+  };
+  const stop = () => {
+    if (timer) clearInterval(timer);
+    timer = null;
+  };
+  el.addEventListener('pointerdown', start);
+  el.addEventListener('pointerup', stop);
+  el.addEventListener('pointerleave', stop);
+  el.addEventListener('pointercancel', stop);
+  el.addEventListener('contextmenu', (e) => e.preventDefault());
+}
+
+/** 滑块在横向滚动侧栏内可正常拖动 */
+function bindRangeSlider(el, onInput) {
+  if (!el) return;
+  const stop = (e) => e.stopPropagation();
+  el.addEventListener('input', onInput);
+  el.addEventListener('pointerdown', stop);
+  el.addEventListener('touchstart', stop, { passive: true });
+  el.addEventListener('touchmove', stop, { passive: true });
 }
 
 function handleCanvasTap(clientX, clientY) {
@@ -1104,38 +1133,26 @@ function handleCanvasTap(clientX, clientY) {
 }
 
 document.addEventListener('keydown', (e) => {
-
   if (!game || game.paused) return;
-
   if (e.key === 'ArrowLeft') sendAction({ type: 'rotate', delta: -5 });
-
   if (e.key === 'ArrowRight') sendAction({ type: 'rotate', delta: 5 });
-
   if (e.key === ' ') { e.preventDefault(); fire(); }
-
 });
-
-
 
 bindTap($('#btnFire'), fire);
-
 bindTap($('#btnFireTouch'), fire);
 
-bindTap($('#btnRotateL'), () => {
-
+const rotateLeft = () => {
   if (!game || game.paused) return;
-
   sendAction({ type: 'rotate', delta: -5 });
-
-});
-
-bindTap($('#btnRotateR'), () => {
-
+};
+const rotateRight = () => {
   if (!game || game.paused) return;
-
   sendAction({ type: 'rotate', delta: 5 });
+};
 
-});
+bindHold($('#btnRotateL'), rotateLeft);
+bindHold($('#btnRotateR'), rotateRight);
 
 
 
@@ -1232,35 +1249,31 @@ if (canvasWrap) {
 }
 
 if (gameCanvas) {
+  let canvasPointerId = null;
+  let canvasDownX = 0;
+  let canvasDownY = 0;
 
-  gameCanvas.addEventListener('touchmove', (e) => {
-
-    if (e.touches.length > 1) e.preventDefault();
-
-  }, { passive: false });
-
-  gameCanvas.addEventListener('click', (e) => {
-
-    handleCanvasTap(e.clientX, e.clientY);
-
+  gameCanvas.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    canvasPointerId = e.pointerId;
+    canvasDownX = e.clientX;
+    canvasDownY = e.clientY;
+    try { gameCanvas.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
   });
 
-  gameCanvas.addEventListener('touchend', (e) => {
+  gameCanvas.addEventListener('pointerup', (e) => {
+    if (canvasPointerId == null || e.pointerId !== canvasPointerId) return;
+    canvasPointerId = null;
+    try { gameCanvas.releasePointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+    const moved = Math.hypot(e.clientX - canvasDownX, e.clientY - canvasDownY);
+    if (moved > 14) return;
+    if (e.target.closest?.('.mobile-controls')) return;
+    handleCanvasTap(e.clientX, e.clientY);
+  });
 
-    if (e.changedTouches.length !== 1) return;
-
-    const t = e.changedTouches[0];
-
-    const hitControl = document.elementFromPoint(t.clientX, t.clientY)?.closest('.mobile-controls');
-
-    if (hitControl) return;
-
-    e.preventDefault();
-
-    handleCanvasTap(t.clientX, t.clientY);
-
-  }, { passive: false });
-
+  gameCanvas.addEventListener('pointercancel', () => {
+    canvasPointerId = null;
+  });
 }
 
 
@@ -1370,6 +1383,8 @@ function toast(msg, isError = false) {
 }
 
 
+
+initControlSliders();
 
 showScreen('entryScreen');
 

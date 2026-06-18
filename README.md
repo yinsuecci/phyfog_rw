@@ -11,6 +11,12 @@ npm start
 
 浏览器打开 http://localhost:3000
 
+## 一键部署到 rw.udclass.top
+
+双击 **`一键部署.bat`**，或运行 `.\deploy.ps1`。首次使用见 [DEPLOY.md](DEPLOY.md)。
+
+生成独立 `Deploy.exe`：`.\build-deploy-exe.ps1`
+
 ## 如何加入房间
 
 ### 同一局域网（同一 WiFi）
