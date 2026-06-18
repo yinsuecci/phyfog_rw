@@ -9,12 +9,36 @@ export class Network {
     this.playerIndex = 0;
     this.roomCode = null;
     this.hostId = null;
+    this.roomJoined = false;
     this.handlers = {};
     this._socketToIndex = {};
   }
 
+  waitForConnect(timeoutMs = 15000) {
+    return new Promise((resolve, reject) => {
+      if (this.socket?.connected) {
+        resolve();
+        return;
+      }
+      const timer = setTimeout(() => {
+        this.socket?.off('connect', onConnect);
+        reject(new Error('连接服务器超时'));
+      }, timeoutMs);
+      const onConnect = () => {
+        clearTimeout(timer);
+        this.socket?.off('connect', onConnect);
+        resolve();
+      };
+      this.socket?.on('connect', onConnect);
+    });
+  }
+
   connect(serverUrl) {
-    if (serverUrl) this.serverUrl = serverUrl.replace(/\/$/, '');
+    const nextUrl = (serverUrl || this.serverUrl || window.location.origin).replace(/\/$/, '');
+    if (this.socket?.connected && this.serverUrl === nextUrl) {
+      return this;
+    }
+    this.serverUrl = nextUrl;
     if (this.socket) this.socket.disconnect();
 
     this.socket = io(this.serverUrl, {
@@ -23,8 +47,14 @@ export class Network {
       reconnectionAttempts: 8,
     });
 
-    this.socket.on('connect', () => this._emit('connect', { url: this.serverUrl }));
-    this.socket.on('disconnect', (reason) => this._emit('disconnect', { reason }));
+    this.socket.on('connect', () => {
+      this.roomJoined = false;
+      this._emit('connect', { url: this.serverUrl });
+    });
+    this.socket.on('disconnect', (reason) => {
+      this.roomJoined = false;
+      this._emit('disconnect', { reason });
+    });
     this.socket.on('connect_error', (err) => this._emit('connect_error', { message: err.message }));
     this.socket.on('lobby:update', (d) => this._emit('lobby:update', d));
     this.socket.on('game:start', (d) => this._emit('game:start', d));
@@ -56,6 +86,7 @@ export class Network {
           this.isHost = true;
           this.roomCode = res.roomCode;
           this.playerIndex = res.playerIndex;
+          this.roomJoined = true;
         }
         resolve(res);
       });
@@ -69,6 +100,7 @@ export class Network {
           this.isHost = res.isHost;
           this.roomCode = res.roomCode;
           this.playerIndex = res.playerIndex;
+          this.roomJoined = true;
         }
         resolve(res);
       });
@@ -82,6 +114,7 @@ export class Network {
           this.isHost = res.isHost;
           this.roomCode = res.roomCode;
           this.playerIndex = res.playerIndex;
+          this.roomJoined = true;
         }
         resolve(res);
       });
@@ -99,11 +132,15 @@ export class Network {
   }
 
   sendAction(action) {
+    if (!this.socket?.connected || !this.roomJoined) return false;
     this.socket.emit('game:action', action);
+    return true;
   }
 
   sendState(state) {
-    if (this.isHost) this.socket.emit('game:state', state);
+    if (this.isHost && this.socket?.connected && this.roomJoined) {
+      this.socket.emit('game:state', state);
+    }
   }
 
   pauseGame(paused) {

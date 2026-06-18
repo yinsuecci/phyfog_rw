@@ -494,7 +494,9 @@ io.on('connection', (socket) => {
 
     const room = rooms.get(currentRoom);
 
-    if (!room || !room.gameStarted || room.hostDisconnected) return;
+    if (!room || !room.gameStarted) return;
+
+    if (room.hostDisconnected || !room.hostId) return;
 
     if (socket.id !== room.hostId) {
 

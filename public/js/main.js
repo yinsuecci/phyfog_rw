@@ -57,6 +57,8 @@ let animId = null;
 let towerListDirty = true;
 
 let rejoinAttempted = false;
+let hostWaiting = false;
+let lastStateRecvAt = 0;
 
 /** 大厅席位在线状态 { playerIndex, nickname, disconnected } */
 let roomPlayerStatus = [];
@@ -138,13 +140,24 @@ function clearSession() {
 
 
 function connectNetwork() {
+  const url = getServerUrl().replace(/\/$/, '') || window.location.origin;
+  if (net.socket?.connected && net.serverUrl === url) {
+    clearDisconnectNotice();
+    $('#connStatus').textContent = '已连接 ' + url;
+    $('#connStatus').className = 'conn-status ok';
+    return url;
+  }
   clearDisconnectNoticeTimer();
   if (!connectionPendingSince) connectionPendingSince = Date.now();
-  const url = getServerUrl();
   net.connect(url);
   $('#connStatus').textContent = '连接中…';
   $('#connStatus').className = 'conn-status';
   return url;
+}
+
+async function ensureConnected() {
+  connectNetwork();
+  await net.waitForConnect();
 }
 
 
@@ -213,6 +226,8 @@ function onSocketConnected() {
 }
 
 function onSocketDisconnected() {
+  rejoinAttempted = false;
+  net.roomJoined = false;
   if (!connectionPendingSince) connectionPendingSince = Date.now();
   $('#connStatus').textContent = '连接中…';
   $('#connStatus').className = 'conn-status';
@@ -230,7 +245,25 @@ function onSocketConnectError(d) {
 
 $('#serverUrl').addEventListener('change', () => connectNetwork());
 
-$('#serverUrl').addEventListener('blur', () => connectNetwork());
+function resolveLocalPlayerIdx(players) {
+  const me = (players || []).find(p => p.id === net.id);
+  if (me) return me.playerIndex;
+  return net.playerIndex ?? 0;
+}
+
+function syncHostFlags(hostId) {
+  net.hostId = hostId;
+  net.isHost = net.id === hostId;
+  $('#hostControls').style.display = net.isHost ? 'flex' : 'none';
+}
+
+function setSyncOverlay(show, text) {
+  const el = $('#syncOverlay');
+  const txt = $('#syncOverlayText');
+  if (!el) return;
+  if (txt && text) txt.textContent = text;
+  el.classList.toggle('hidden', !show);
+}
 
 
 
@@ -243,6 +276,13 @@ async function tryAutoRejoin() {
   if (!saved?.roomCode || !saved?.nickname) return;
 
   rejoinAttempted = true;
+
+  try {
+    await net.waitForConnect();
+  } catch {
+    rejoinAttempted = false;
+    return;
+  }
 
   const res = await net.rejoinRoom(saved.roomCode, saved.nickname, saved.playerIndex);
 
@@ -336,7 +376,11 @@ $('#btnDoCreate').addEventListener('click', async () => {
 
   if (!mapData) return toast('请先导入地图', true);
 
-  connectNetwork();
+  try {
+    await ensureConnected();
+  } catch {
+    return toast('无法连接服务器', true);
+  }
 
   const res = await net.createRoom(nickname, mapData);
 
@@ -364,7 +408,11 @@ $('#btnDoJoin').addEventListener('click', async () => {
 
   if (!nickname || roomCode.length !== 6) return toast('请输入昵称和6位房间号', true);
 
-  connectNetwork();
+  try {
+    await ensureConnected();
+  } catch {
+    return toast('无法连接服务器', true);
+  }
 
   const res = await net.joinRoom(roomCode, nickname);
 
@@ -475,7 +523,7 @@ net.on('lobby:update', (data) => {
 
 net.on('game:start', (data) => {
 
-  net.hostId = data.hostId;
+  syncHostFlags(data.hostId);
 
   data.players.forEach(p => {
 
@@ -483,7 +531,11 @@ net.on('game:start', (data) => {
 
   });
 
-  localPlayerIdx = net.playerIndex;
+  localPlayerIdx = resolveLocalPlayerIdx(data.players);
+
+  hostWaiting = false;
+
+  setSyncOverlay(false);
 
   syncRoomPlayerStatus(data.players);
 
@@ -495,7 +547,7 @@ net.on('game:start', (data) => {
 
 net.on('game:rejoin', (data) => {
 
-  net.hostId = data.hostId;
+  syncHostFlags(data.hostId);
 
   data.players.forEach(p => {
 
@@ -503,7 +555,11 @@ net.on('game:rejoin', (data) => {
 
   });
 
-  localPlayerIdx = net.playerIndex;
+  localPlayerIdx = resolveLocalPlayerIdx(data.players);
+
+  hostWaiting = false;
+
+  setSyncOverlay(false);
 
   syncRoomPlayerStatus(data.players);
 
@@ -518,6 +574,8 @@ net.on('game:rejoin', (data) => {
   if (data.state) {
 
     game.applyState(data.state);
+
+    if (!net.isHost) lastStateRecvAt = Date.now();
 
     if (net.isHost) broadcastState();
 
@@ -548,6 +606,8 @@ net.on('game:state', (state) => {
   if (net.isHost) return;
 
   game?.applyState(state);
+
+  lastStateRecvAt = Date.now();
 
   towerListDirty = true;
 
@@ -597,13 +657,21 @@ net.on('game:return-lobby', () => {
 
 
 
-net.on('game:host-waiting', (d) => toast(d.message, true));
+net.on('game:host-waiting', (d) => {
+  hostWaiting = true;
+  if (!net.isHost) setSyncOverlay(true, d.message || '房主断线，等待重连…');
+  toast(d.message, true);
+});
 
 net.on('game:host-restored', (d) => {
 
-  net.hostId = d.hostId;
+  syncHostFlags(d.hostId);
 
-  toast('房主已重连');
+  hostWaiting = false;
+
+  setSyncOverlay(false);
+
+  toast(net.isHost ? '你已恢复房主权限' : '房主已重连');
 
 });
 
@@ -698,6 +766,10 @@ function startGameLoop() {
           lastSync = now;
 
         }
+
+      } else if (game && !hostWaiting && lastStateRecvAt > 0 && now - lastStateRecvAt > 4000) {
+
+        setSyncOverlay(true, '等待房主同步状态…');
 
       }
 
@@ -1184,6 +1256,19 @@ function fire() {
 
 function sendAction(action) {
 
+  if (!game) return;
+
+  if (hostWaiting && !net.isHost) {
+    toast('房主断线中，请稍候', true);
+    return;
+  }
+
+  if (!net.isHost && (!net.socket?.connected || !net.roomJoined)) {
+    toast('未连接到房间，正在重连…', true);
+    tryAutoRejoin();
+    return;
+  }
+
   const payload = { ...action, playerIndex: localPlayerIdx };
 
 
@@ -1216,7 +1301,10 @@ function sendAction(action) {
 
   } else {
 
-    net.sendAction(payload);
+    if (!net.sendAction(payload)) {
+      toast('操作发送失败，请检查网络', true);
+      return;
+    }
 
   }
 
