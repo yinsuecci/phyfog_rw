@@ -440,11 +440,20 @@ export class GameLogic {
 
   handleAction(fromPlayerIndex, action) {
     switch (action.type) {
-      case 'rotate': this.rotate(fromPlayerIndex, action.delta); break;
-      case 'shoot': this.shoot(fromPlayerIndex, action.bandId, action.bandEnergy, action.radioPayload); break;
-      case 'build': return this.build(fromPlayerIndex, action.buildType, action.x, action.y, action.energyInput, action.mirrorAngle);
-      case 'switchTower': this.switchTower(fromPlayerIndex, action.towerType, action.key); break;
+      case 'rotate':
+        this.rotate(fromPlayerIndex, action.delta);
+        return { ok: true };
+      case 'shoot': {
+        const ray = this.shoot(fromPlayerIndex, action.bandId, action.bandEnergy, action.radioPayload);
+        return ray ? { ok: true } : { ok: false, error: '无法发射（冷却/能量/暂停）' };
+      }
+      case 'build':
+        return this.build(fromPlayerIndex, action.buildType, action.x, action.y, action.energyInput, action.mirrorAngle);
+      case 'switchTower':
+        this.switchTower(fromPlayerIndex, action.towerType, action.key);
+        return { ok: true };
+      default:
+        return { ok: false, error: '未知操作' };
     }
-    return { ok: true };
   }
 }

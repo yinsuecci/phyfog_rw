@@ -3,6 +3,9 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const TICK_HZ = 30;
+const TICK_MS = Math.floor(1000 / TICK_HZ);
+
 let GameLogicClass = null;
 
 async function loadGameLogic() {
@@ -17,6 +20,51 @@ function lobbyNicknames(room) {
   return room.players
     .filter((p) => !p.disconnected)
     .map((p) => ({ playerIndex: p.playerIndex, nickname: p.nickname }));
+}
+
+function buildRoomState(room, viewerPlayerIndex = null, fixedSeq = null, fixedServerTime = null) {
+  if (!room.gameLogic) return null;
+  if (fixedSeq == null) {
+    room.stateSeq = (room.stateSeq ?? 0) + 1;
+  }
+  const seq = fixedSeq ?? room.stateSeq;
+  const serialized = room.gameLogic.serialize();
+  if (viewerPlayerIndex != null) {
+    serialized.players = serialized.players.map((p, i) => {
+      if (i === viewerPlayerIndex) return p;
+      return { ...p, visionGrid: null };
+    });
+  }
+  return {
+    ...serialized,
+    stateSeq: seq,
+    serverTime: fixedServerTime ?? Date.now(),
+  };
+}
+
+export function broadcastRoomState(io, roomCode, room) {
+  if (!room.gameLogic) return null;
+  room.stateSeq = (room.stateSeq ?? 0) + 1;
+  const seq = room.stateSeq;
+  const serverTime = Date.now();
+  const base = room.gameLogic.serialize();
+
+  for (const pl of room.players) {
+    if (!pl.id || pl.disconnected) continue;
+    const players = base.players.map((p, i) => {
+      if (i === pl.playerIndex) return p;
+      return { ...p, visionGrid: null };
+    });
+    io.to(pl.id).emit('game:state', {
+      ...base,
+      players,
+      stateSeq: seq,
+      serverTime,
+    });
+  }
+
+  room.lastGameState = { ...base, stateSeq: seq, serverTime };
+  return room.lastGameState;
 }
 
 export async function startRoomGame(room) {
@@ -36,16 +84,6 @@ export function stopRoomGame(room) {
   room.stateSeq = 0;
 }
 
-function buildRoomState(room) {
-  if (!room.gameLogic) return null;
-  room.stateSeq = (room.stateSeq ?? 0) + 1;
-  return {
-    ...room.gameLogic.serialize(),
-    stateSeq: room.stateSeq,
-    serverTime: Date.now(),
-  };
-}
-
 export function handleRoomAction(room, playerIndex, action) {
   if (!room.gameLogic || !room.gameStarted) {
     return { ok: false, error: '对局未开始' };
@@ -61,8 +99,8 @@ export function handleRoomAction(room, playerIndex, action) {
     return { ok: false, error: '无效操作' };
   }
 
-  room.gameLogic.handleAction(playerIndex, action);
-  return { ok: true };
+  const result = room.gameLogic.handleAction(playerIndex, action);
+  return result?.ok === false ? result : { ok: true };
 }
 
 export function setRoomPaused(room, paused) {
@@ -70,12 +108,9 @@ export function setRoomPaused(room, paused) {
   if (room.gameLogic) room.gameLogic.paused = room.paused;
 }
 
-export function broadcastRoomState(io, roomCode, room) {
-  const state = buildRoomState(room);
-  if (!state) return null;
-  room.lastGameState = state;
-  io.to(roomCode).emit('game:state', state);
-  return state;
+export function getRejoinState(room, playerIndex) {
+  if (!room.gameLogic) return room.lastGameState;
+  return buildRoomState(room, playerIndex);
 }
 
 export function tickRooms(rooms, io) {
@@ -89,4 +124,8 @@ export function tickRooms(rooms, io) {
     room.gameLogic.tick(dt);
     broadcastRoomState(io, code, room);
   }
+}
+
+export function getTickMs() {
+  return TICK_MS;
 }

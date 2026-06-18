@@ -57,6 +57,9 @@ let towerListDirty = true;
 let rejoinAttempted = false;
 let lastStateRecvAt = 0;
 let lastStateSeq = 0;
+let lastServerWallTime = 0;
+let lastServerGameTime = 0;
+let lastServerSyncAt = 0;
 
 /** 大厅席位在线状态 { playerIndex, nickname, disconnected } */
 let roomPlayerStatus = [];
@@ -520,12 +523,25 @@ net.on('lobby:update', (data) => {
 
 
 
+function getDisplayGameTime() {
+  if (!game) return 0;
+  if (game.paused || game.winner != null) return game.gameTime;
+  if (!lastServerSyncAt) return game.gameTime;
+  const elapsed = (Date.now() - lastServerSyncAt) / 1000;
+  return lastServerGameTime + elapsed;
+}
+
 function applyServerState(state) {
   if (!game || !state) return;
-  if (state.stateSeq != null && state.stateSeq <= lastStateSeq) return;
+  const seqNewer = state.stateSeq == null || state.stateSeq > lastStateSeq;
+  const timeNewer = state.serverTime == null || state.serverTime >= lastServerWallTime;
+  if (!seqNewer && !timeNewer) return;
   if (state.stateSeq != null) lastStateSeq = state.stateSeq;
+  if (state.serverTime != null) lastServerWallTime = state.serverTime;
   game.applyState(state);
-  lastStateRecvAt = Date.now();
+  lastServerGameTime = state.gameTime ?? game.gameTime;
+  lastServerSyncAt = Date.now();
+  lastStateRecvAt = lastServerSyncAt;
   setSyncOverlay(false);
   $('#pauseOverlay').classList.toggle('hidden', !game.paused);
   towerListDirty = true;
@@ -543,6 +559,9 @@ net.on('game:start', (data) => {
   localPlayerIdx = resolveLocalPlayerIdx(data.players);
 
   lastStateSeq = 0;
+  lastServerWallTime = 0;
+  lastServerGameTime = 0;
+  lastServerSyncAt = 0;
 
   setSyncOverlay(false);
 
@@ -569,6 +588,9 @@ net.on('game:rejoin', (data) => {
   localPlayerIdx = resolveLocalPlayerIdx(data.players);
 
   lastStateSeq = 0;
+  lastServerWallTime = 0;
+  lastServerGameTime = 0;
+  lastServerSyncAt = 0;
 
   setSyncOverlay(false);
 
@@ -735,6 +757,9 @@ function stopGameLoop() {
   lastStateRecvAt = 0;
 
   lastStateSeq = 0;
+  lastServerWallTime = 0;
+  lastServerGameTime = 0;
+  lastServerSyncAt = 0;
 
 }
 
@@ -752,7 +777,7 @@ function updateHUD() {
 
   $('#hudEnergy').textContent = Math.floor(p.energy) + ' J';
 
-  $('#hudTime').textContent = formatTime(game.gameTime);
+  $('#hudTime').textContent = formatTime(getDisplayGameTime());
 
   updateFireCooldownUI();
 
@@ -776,7 +801,7 @@ function updateFireCooldownUI() {
 
   const cdSec = p.fireCooldownSec ?? 5;
 
-  const remaining = Math.max(0, (p.fireCooldownUntil ?? 0) - game.gameTime);
+  const remaining = Math.max(0, (p.fireCooldownUntil ?? 0) - getDisplayGameTime());
 
   const ratio = cdSec > 0 ? remaining / cdSec : 0;
 
@@ -800,7 +825,7 @@ function canFireNow() {
 
   if (!p?.alive) return false;
 
-  return game.gameTime >= (p.fireCooldownUntil ?? 0);
+  return getDisplayGameTime() >= (p.fireCooldownUntil ?? 0);
 
 }
 
@@ -1185,9 +1210,20 @@ function sendAction(action) {
     return;
   }
 
-  net.sendAction(action).then((res) => {
+  // 轻量本地预测：旋转/切塔立即有反馈，最终以服务器 state 为准
+  if (action.type === 'rotate') {
+    game.rotate(localPlayerIdx, action.delta);
+  } else if (action.type === 'switchTower') {
+    game.switchTower(localPlayerIdx, action.towerType, action.key);
+    renderer?.resetUserZoom();
+  }
+
+  const noAck = action.type === 'rotate';
+  net.sendAction(action, { noAck }).then((res) => {
     if (res && !res.ok) toast(res.error || '操作被拒绝', true);
   });
+
+  towerListDirty = true;
 
 }
 

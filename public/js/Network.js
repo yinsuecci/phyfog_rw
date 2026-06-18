@@ -256,14 +256,21 @@ export class Network {
 
 
 
-  sendAction(action) {
+  sendAction(action, { noAck = false } = {}) {
 
     if (!this.socket?.connected || !this.roomJoined) {
       return Promise.resolve({ ok: false, error: '未连接到房间' });
     }
 
+    if (noAck) {
+      this.socket.emit('game:action', action);
+      return Promise.resolve({ ok: true });
+    }
+
     return new Promise((resolve) => {
+      const timer = setTimeout(() => resolve({ ok: true }), 3000);
       this.socket.emit('game:action', action, (res) => {
+        clearTimeout(timer);
         resolve(res ?? { ok: true });
       });
     });

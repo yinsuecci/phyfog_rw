@@ -191,6 +191,7 @@ io.on('connection', (socket) => {
     socket.join(roomCode);
 
     const isHost = slot === room.hostPlayerIndex;
+    const gameApi = await gameApiPromise;
 
     if (room.gameStarted) {
       ack?.({
@@ -205,7 +206,7 @@ io.on('connection', (socket) => {
       socket.emit('game:rejoin', {
         mapData: room.mapData,
         players: getRoomList(room),
-        state: room.lastGameState,
+        state: room.gameLogic ? gameApi.getRejoinState(room, slot) : room.lastGameState,
         paused: room.paused,
         playerIndex: slot,
       });
@@ -235,18 +236,25 @@ io.on('connection', (socket) => {
       return ack?.({ ok: false, error: '尚有玩家未准备' });
     }
 
-    const gameApi = await gameApiPromise;
-    room.gameStarted = true;
-    room.paused = false;
-    await gameApi.startRoomGame(room);
+    try {
+      const gameApi = await gameApiPromise;
+      room.gameStarted = true;
+      room.paused = false;
+      await gameApi.startRoomGame(room);
+      gameApi.broadcastRoomState(io, currentRoom, room);
 
-    io.to(currentRoom).emit('game:start', {
-      mapData: room.mapData,
-      players: getRoomList(room),
-      state: room.lastGameState,
-    });
+      io.to(currentRoom).emit('game:start', {
+        mapData: room.mapData,
+        players: getRoomList(room),
+        state: room.lastGameState,
+      });
 
-    ack?.({ ok: true });
+      ack?.({ ok: true });
+    } catch (err) {
+      room.gameStarted = false;
+      console.error('[game:start]', err);
+      ack?.({ ok: false, error: '服务器启动游戏失败: ' + (err.message || err) });
+    }
   });
 
   socket.on('game:pause', async ({ paused }) => {
@@ -322,7 +330,9 @@ io.on('connection', (socket) => {
 });
 
 gameApiPromise.then((gameApi) => {
-  setInterval(() => gameApi.tickRooms(rooms, io), 50);
+  const ms = gameApi.getTickMs();
+  console.log(`[PhyFog] Server game loop ${Math.round(1000 / ms)} Hz`);
+  setInterval(() => gameApi.tickRooms(rooms, io), ms);
 });
 
 server.listen(PORT, () => {
