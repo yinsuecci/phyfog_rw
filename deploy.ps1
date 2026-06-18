@@ -89,16 +89,33 @@ function Get-SshScpArgs([object]$cfg) {
     return @{ Ssh = $sshArgs; Scp = $scpArgs; Target = $target }
 }
 
+function Invoke-NativeCmd([string]$Exe, [string[]]$Args) {
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $lines = & $Exe @Args 2>&1 | ForEach-Object {
+            if ($_ -is [System.Management.Automation.ErrorRecord]) {
+                if ($_.Exception.Message) { $_.Exception.Message } else { $_.ToString() }
+            } else {
+                "$_"
+            }
+        }
+        return @{ Output = $lines; ExitCode = $LASTEXITCODE }
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
+}
+
 function Invoke-RemoteCmd([object]$cfg, [string]$remoteCmd) {
     $conn = Get-SshScpArgs $cfg
     Write-Ok "Connecting $($conn.Target) ..."
-    $sshArgs = $conn.Ssh
-    $output = & ssh @sshArgs $conn.Target $remoteCmd 2>&1
-    $output | ForEach-Object { Write-Host "   $_" }
-    if ($LASTEXITCODE -ne 0) {
-        throw "Remote command failed (exit $LASTEXITCODE)"
+    $sshArgs = $conn.Ssh + @($conn.Target, $remoteCmd)
+    $result = Invoke-NativeCmd -Exe "ssh" -Args $sshArgs
+    $result.Output | ForEach-Object { Write-Host "   $_" }
+    if ($result.ExitCode -ne 0) {
+        throw "Remote command failed (exit $($result.ExitCode))"
     }
-    return ($output | Out-String)
+    return ($result.Output | Out-String)
 }
 
 function Deploy-ServerGitPull([object]$cfg) {
@@ -154,9 +171,9 @@ function Deploy-ServerDirectUpload([object]$cfg) {
     foreach ($item in $uploadItems) {
         $local = Join-Path $Root $item
         if (-not (Test-Path $local)) { continue }
-        $scpArgs = $conn.Scp
-        & scp @scpArgs -r $local "$($conn.Target):$remotePath/"
-        if ($LASTEXITCODE -ne 0) {
+        $scpArgs = $conn.Scp + @("-r", $local, "$($conn.Target):$remotePath/")
+        $result = Invoke-NativeCmd -Exe "scp" -Args $scpArgs
+        if ($result.ExitCode -ne 0) {
             throw "scp failed for $item"
         }
         Write-Ok "  uploaded: $item"
