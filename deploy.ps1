@@ -89,11 +89,11 @@ function Get-SshScpArgs([object]$cfg) {
     return @{ Ssh = $sshArgs; Scp = $scpArgs; Target = $target }
 }
 
-function Invoke-NativeCmd([string]$Exe, [string[]]$Args) {
+function Invoke-NativeCmd([string]$Exe, [string[]]$CommandArgs) {
     $prevEap = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
-        $lines = & $Exe @Args 2>&1 | ForEach-Object {
+        $lines = & $Exe @CommandArgs 2>&1 | ForEach-Object {
             if ($_ -is [System.Management.Automation.ErrorRecord]) {
                 if ($_.Exception.Message) { $_.Exception.Message } else { $_.ToString() }
             } else {
@@ -109,8 +109,8 @@ function Invoke-NativeCmd([string]$Exe, [string[]]$Args) {
 function Invoke-RemoteCmd([object]$cfg, [string]$remoteCmd) {
     $conn = Get-SshScpArgs $cfg
     Write-Ok "Connecting $($conn.Target) ..."
-    $sshArgs = $conn.Ssh + @($conn.Target, $remoteCmd)
-    $result = Invoke-NativeCmd -Exe "ssh" -Args $sshArgs
+    $sshArgs = $conn.Ssh
+    $result = Invoke-NativeCmd -Exe "ssh" -CommandArgs ($sshArgs + @($conn.Target, $remoteCmd))
     $result.Output | ForEach-Object { Write-Host "   $_" }
     if ($result.ExitCode -ne 0) {
         throw "Remote command failed (exit $($result.ExitCode))"
@@ -172,7 +172,7 @@ function Deploy-ServerDirectUpload([object]$cfg) {
         $local = Join-Path $Root $item
         if (-not (Test-Path $local)) { continue }
         $scpArgs = $conn.Scp + @("-r", $local, "$($conn.Target):$remotePath/")
-        $result = Invoke-NativeCmd -Exe "scp" -Args $scpArgs
+        $result = Invoke-NativeCmd -Exe "scp" -CommandArgs $scpArgs
         if ($result.ExitCode -ne 0) {
             throw "scp failed for $item"
         }
