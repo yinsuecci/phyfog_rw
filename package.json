@@ -5,8 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js",
-    "tunnel": "ngrok start phyfog --config ngrok.yml"
+    "dev": "node server.js"
   },
   "dependencies": {
     "express": "^4.21.0",

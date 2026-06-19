@@ -3,4 +3,3 @@ deploy.config.json
 *.log
 .DS_Store
 Thumbs.db
-ngrok.exe
