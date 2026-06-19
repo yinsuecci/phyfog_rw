@@ -12,7 +12,10 @@ const gameApiPromise = import('./serverGame.mjs');
 const PORT = process.env.PORT || 3000;
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: '*' } });
+const io = new Server(server, {
+  cors: { origin: '*' },
+  perMessageDeflate: { threshold: 256 },
+});
 
 /** @type {Map<string, object>} */
 const rooms = new Map();
@@ -241,7 +244,7 @@ io.on('connection', (socket) => {
       room.gameStarted = true;
       room.paused = false;
       await gameApi.startRoomGame(room);
-      gameApi.broadcastRoomState(io, currentRoom, room);
+      gameApi.broadcastFullState(io, currentRoom, room);
 
       io.to(currentRoom).emit('game:start', {
         mapData: room.mapData,
@@ -265,7 +268,7 @@ io.on('connection', (socket) => {
     const gameApi = await gameApiPromise;
     gameApi.setRoomPaused(room, paused);
     io.to(currentRoom).emit('game:paused', { paused: room.paused });
-    gameApi.broadcastRoomState(io, currentRoom, room);
+    gameApi.broadcastFullState(io, currentRoom, room);
   });
 
   socket.on('game:action', async (action, ack) => {
@@ -284,9 +287,17 @@ io.on('connection', (socket) => {
     const gameApi = await gameApiPromise;
     const result = gameApi.handleRoomAction(room, playerIndex, action);
     if (result.ok) {
-      gameApi.broadcastRoomState(io, currentRoom, room);
+      if (action.type === 'rotateSync') {
+        gameApi.broadcastPlayerRotation(io, currentRoom, room, playerIndex);
+      } else {
+        gameApi.broadcastFullState(io, currentRoom, room);
+      }
     }
-    ack?.(result);
+    if (action.type === 'rotateSync') {
+      ack?.(result.ok ? { ok: true } : result);
+    } else {
+      ack?.(result);
+    }
   });
 
   socket.on('game:return-lobby', async () => {

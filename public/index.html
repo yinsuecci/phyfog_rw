@@ -16,12 +16,8 @@
     <h1>PhyFog <span>Radiant War</span></h1>
     <p class="subtitle">光学辐射对战 · 联机版</p>
 
-    <div class="server-panel">
-      <label>服务器地址</label>
-      <input id="serverUrl" type="text" placeholder="留空 = 当前页面地址">
-      <p class="help-text">同一 WiFi：所有人填房主电脑局域网 IP，如 <code>http://192.168.1.5:3000</code></p>
-      <p class="help-text">互联网对战：房主运行 <code>.\start-ngrok.ps1</code>，详见 <a href="/NGROK.md" target="_blank">NGROK.md</a></p>
-      <span id="connStatus" class="conn-status">未连接</span>
+    <div class="conn-panel">
+      <span id="connStatus" class="conn-status">连接中…</span>
     </div>
 
     <div class="entry-btns">
@@ -29,7 +25,7 @@
       <button id="btnJoin" class="btn secondary">加入房间</button>
     </div>
     <div id="createPanel" class="panel hidden">
-      <p class="panel-guide">① 导入地图  ② 创建房间获得房间号  ③ 把<strong>服务器地址 + 房间号</strong>发给其他玩家</p>
+      <p class="panel-guide">① 导入地图  ② 创建房间获得房间号  ③ 把<strong>房间号</strong>发给其他玩家</p>
       <input id="nicknameCreate" type="text" placeholder="昵称" maxlength="16">
       <label class="file-label">
         <input id="mapFile" type="file" accept=".json" hidden>
@@ -39,7 +35,7 @@
       <button id="btnDoCreate" class="btn primary full">创建房间</button>
     </div>
     <div id="joinPanel" class="panel hidden">
-      <p class="panel-guide">① 向房主索要 <strong>6 位房间号</strong>  ② 确认上方服务器地址与房主一致  ③ 输入昵称和房间号加入</p>
+      <p class="panel-guide">① 向房主索要 <strong>6 位房间号</strong>  ② 输入昵称和房间号加入</p>
       <input id="nicknameJoin" type="text" placeholder="昵称" maxlength="16">
       <input id="roomCodeInput" type="text" placeholder="6位房间号" maxlength="6" inputmode="numeric" pattern="[0-9]{6}">
       <button id="btnDoJoin" class="btn primary full">加入房间</button>
@@ -55,7 +51,6 @@
     <div class="room-code-display">
       <span>房间号（告知其他玩家）</span>
       <strong id="lobbyRoomCode">------</strong>
-      <p id="lobbyServerHint" class="lobby-server-hint"></p>
     </div>
     <ul id="playerList" class="player-list"></ul>
     <button id="btnReady" class="btn secondary full">准备</button>
@@ -83,7 +78,11 @@
       <div id="bandButtons" class="btn-grid"></div>
       <div id="visibleSlider" class="slider-row">
         <label>可见光能量 <span id="visibleEnergyVal">5J</span></label>
-        <input id="visibleEnergy" type="range" min="1" max="10" value="5">
+        <div class="visible-slider-wrap">
+          <div class="visible-slider-rail" aria-hidden="true"></div>
+          <div class="visible-slider-fill" id="visibleEnergyFill" aria-hidden="true"></div>
+          <input id="visibleEnergy" type="range" min="1" max="10" value="5" step="1">
+        </div>
       </div>
       <div id="radioPanel" class="hidden">
         <label class="radio-opt"><input type="radio" name="radioMode" value="message" checked> 携带消息</label>
@@ -98,24 +97,29 @@
         <span id="fireCdOverlay" class="fire-cd-overlay" aria-hidden="true"></span>
       </div>
     </div>
-    <div class="sidebar-block">
+    <div class="sidebar-block sidebar-build">
       <h3>建设</h3>
-      <div id="buildButtons" class="btn-grid"></div>
+      <div id="buildButtons" class="btn-grid build-grid"></div>
       <div id="buildEnergyPanel" class="slider-row hidden">
         <label>投入能量 <span id="buildEnergyVal">20J</span></label>
         <input id="buildEnergy" type="range" min="5" max="100" value="20">
       </div>
-      <div id="mirrorBuildPanel" class="slider-row hidden">
-        <label>平面镜角度 <span id="mirrorBuildAngleVal">45°</span></label>
-        <input id="mirrorBuildAngle" type="range" min="0" max="360" value="45">
+      <div id="lensBuildPanel" class="slider-row hidden">
+        <label>透镜焦距 <span id="lensBuildFocalVal">5</span> 格</label>
+        <input id="lensBuildFocal" type="range" min="2" max="10" value="5">
       </div>
       <p class="hint">在视野内点击格子建设 · 点击透镜显示聚焦圈</p>
     </div>
     <div class="sidebar-block">
       <h3>视角</h3>
       <button id="btnSwitchMain" class="btn secondary full">🏠 主光塔</button>
+      <button id="btnRelocateMain" class="btn secondary full">↔ 主光塔易位 (40J)</button>
+      <div id="solarInfoPanel" class="info-panel hidden">
+        <div class="info-panel-title">☀ 太阳能板</div>
+        <div id="solarInfoText" class="info-panel-body"></div>
+      </div>
       <div id="attackTowerList" class="tower-list"></div>
-      <p class="hint">← → 旋转 · 滚轮缩放 · 点击透镜显示聚焦圈</p>
+      <p class="hint">在视野内点击格子建设 · 点击透镜显示聚焦圈 · 双指缩放 · 单指拖屏</p>
     </div>
   </aside>
 
@@ -134,10 +138,34 @@
     <div class="canvas-wrap" id="canvasWrap">
       <canvas id="gameCanvas"></canvas>
     </div>
+    <!-- 手机端可见光能量（独立于侧栏，避免 iOS 原生 range 在滚动容器内失效） -->
+    <div id="mobileVisibleBar" class="mobile-visible-bar">
+      <div class="mobile-visible-header">
+        <span class="mobile-visible-title">可见光能量</span>
+        <strong id="mobileVisibleEnergyVal">5J 绿</strong>
+      </div>
+      <div class="mobile-visible-track" id="mobileVisibleTrack" role="slider" aria-valuemin="1" aria-valuemax="10" aria-valuenow="5">
+        <div class="mobile-visible-rail"></div>
+        <div class="mobile-visible-fill" id="mobileVisibleFill"></div>
+        <div class="mobile-visible-thumb" id="mobileVisibleThumb"></div>
+      </div>
+      <div class="mobile-visible-steps" id="mobileVisibleSteps" aria-label="能量档位"></div>
+    </div>
     <div class="mobile-controls" id="mobileControls">
-      <button type="button" class="touch-btn" id="btnRotateL" aria-label="左转">◀</button>
-      <button type="button" class="touch-btn touch-fire" id="btnFireTouch" aria-label="发射">发射</button>
-      <button type="button" class="touch-btn" id="btnRotateR" aria-label="右转">▶</button>
+      <button type="button" class="touch-btn" id="btnZoomOut" aria-label="缩小">−</button>
+      <div class="mobile-fire-wrap">
+        <button type="button" class="touch-btn touch-fire" id="btnFireTouch" aria-label="发射">发射</button>
+        <span id="fireCdOverlayTouch" class="fire-cd-overlay" aria-hidden="true"></span>
+      </div>
+      <button type="button" class="touch-btn" id="btnZoomIn" aria-label="放大">+</button>
+    </div>
+    <!-- 瞄准圆盘：长按拖转 + 八方向锁定 -->
+    <div id="aimDial" class="aim-dial" aria-label="瞄准控制">
+      <div class="aim-dial-arrows" id="aimDialArrows"></div>
+      <div class="aim-dial-ring" id="aimDialRing">
+        <div class="aim-dial-indicator" id="aimDialIndicator"><span></span></div>
+        <span class="aim-dial-hint">长按瞄准</span>
+      </div>
     </div>
   </div>
     </div>

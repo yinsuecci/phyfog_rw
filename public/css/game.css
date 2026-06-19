@@ -53,36 +53,14 @@ body {
 
 .hero p.subtitle { color: var(--muted); margin: 8px 0 16px; font-size: 14px; }
 
-.server-panel {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 12px;
+.conn-panel {
   margin-bottom: 16px;
-  text-align: left;
+  text-align: center;
 }
 
-.server-panel label {
-  display: block;
-  font-size: 11px;
-  color: var(--muted);
-  margin-bottom: 6px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+.conn-panel .conn-status {
+  display: inline-block;
 }
-
-.server-panel input {
-  width: 100%;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 8px 10px;
-  color: var(--text);
-  font-size: 13px;
-  outline: none;
-}
-
-.server-panel input:focus { border-color: var(--accent); }
 
 .help-text {
   font-size: 11px;
@@ -474,6 +452,171 @@ body {
   cursor: pointer;
 }
 
+#visibleSlider input[type="range"] {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  min-height: 32px;
+  background: transparent;
+  accent-color: #22c55e;
+}
+
+.visible-slider-wrap {
+  position: relative;
+  width: 100%;
+  height: 32px;
+  display: flex;
+  align-items: center;
+}
+
+.visible-slider-rail {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.12);
+  pointer-events: none;
+}
+
+.visible-slider-fill {
+  position: absolute;
+  left: 0;
+  height: 6px;
+  width: 44%;
+  border-radius: 3px;
+  background: #22c55e;
+  pointer-events: none;
+  transition: width 0.06s linear, background 0.12s ease;
+}
+
+/* 手机端可见光能量条 — 固定在画布底部、触控按钮上方 */
+.mobile-visible-bar {
+  display: none;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(68px + env(safe-area-inset-bottom, 0px));
+  z-index: 18;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px;
+  background: rgba(13, 17, 23, 0.96);
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.35);
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.mobile-visible-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.mobile-visible-title {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.mobile-visible-header strong {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.mobile-visible-track {
+  position: relative;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  touch-action: none;
+}
+
+.mobile-visible-rail {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 10px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.mobile-visible-fill {
+  position: absolute;
+  left: 0;
+  height: 10px;
+  width: 44%;
+  border-radius: 5px;
+  background: #22c55e;
+  pointer-events: none;
+  transition: width 0.06s linear, background 0.12s ease;
+}
+
+.mobile-visible-thumb {
+  position: absolute;
+  top: 50%;
+  left: 44%;
+  width: 28px;
+  height: 28px;
+  margin-top: -14px;
+  margin-left: -14px;
+  border-radius: 50%;
+  background: #fff;
+  border: 3px solid #22c55e;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+  transition: left 0.06s linear, border-color 0.12s ease;
+}
+
+.mobile-visible-steps {
+  display: grid;
+  grid-template-columns: repeat(10, 1fr);
+  gap: 4px;
+}
+
+.mobile-visible-step {
+  min-height: 32px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  cursor: pointer;
+}
+
+.mobile-visible-step.active {
+  color: #fff;
+  background: rgba(88, 166, 255, 0.25);
+  border-color: var(--accent);
+}
+
+@media (max-width: 768px) {
+  #visibleSlider input[type="range"] {
+    min-height: 40px;
+  }
+}
+
+@media (max-width: 768px), (hover: none) and (pointer: coarse) {
+  #visibleSlider {
+    display: none !important;
+  }
+
+  .mobile-visible-bar {
+    display: none;
+  }
+
+  .mobile-visible-bar.is-visible {
+    display: flex;
+  }
+}
+
 .radio-opt { display: flex; align-items: center; gap: 6px; font-size: 12px; margin: 6px 0; }
 #radioPanel input[type="text"], #radioPanel input[type="number"] {
   width: 100%; background: var(--panel); border: 1px solid var(--border);
@@ -482,7 +625,135 @@ body {
 
 .hint { font-size: 11px; color: var(--muted); line-height: 1.4; margin-top: 6px; }
 
-.game-main { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; }
+.info-panel {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: rgba(255, 191, 36, 0.08);
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  border-radius: 8px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.info-panel-title {
+  font-weight: 600;
+  color: #fbbf24;
+  margin-bottom: 4px;
+}
+
+.info-panel-body { color: var(--text); }
+
+#btnRelocateMain.active {
+  border-color: var(--accent);
+  background: #1f3a5f44;
+  color: var(--accent);
+}
+
+/* 瞄准圆盘 */
+.aim-dial {
+  position: absolute;
+  right: 14px;
+  bottom: 88px;
+  width: 148px;
+  height: 148px;
+  z-index: 22;
+  touch-action: none;
+  user-select: none;
+  pointer-events: none;
+}
+
+.aim-dial-ring,
+.aim-dial-arrows,
+.aim-dial-arrows .aim-snap-btn {
+  pointer-events: auto;
+}
+
+.aim-dial-ring {
+  position: absolute;
+  inset: 22px;
+  border-radius: 50%;
+  border: 2px solid rgba(88, 166, 255, 0.45);
+  background: rgba(13, 17, 23, 0.88);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.aim-dial.is-aiming .aim-dial-ring {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.25);
+}
+
+.aim-dial-hint {
+  position: absolute;
+  font-size: 10px;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.aim-dial.is-aiming .aim-dial-hint { opacity: 0; }
+
+.aim-dial-indicator {
+  position: absolute;
+  inset: 0;
+  transform-origin: center center;
+  pointer-events: none;
+}
+
+.aim-dial-indicator span {
+  position: absolute;
+  left: calc(50% + 6px);
+  top: 50%;
+  width: 0;
+  height: 0;
+  margin-top: -7px;
+  border-top: 7px solid transparent;
+  border-bottom: 7px solid transparent;
+  border-left: 14px solid var(--accent);
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.5));
+}
+
+.aim-dial-arrows {
+  position: absolute;
+  inset: 0;
+}
+
+.aim-dial-arrows .aim-snap-btn {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 22px;
+  height: 22px;
+  margin: -11px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(15, 20, 25, 0.92);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  transform: rotate(var(--pos, 90deg)) translateY(-62px) rotate(calc(-1 * var(--pos, 90deg)));
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.aim-dial-arrows .aim-snap-btn span {
+  display: block;
+  transform: rotate(0deg);
+}
+
+.aim-dial-arrows .aim-snap-btn.active,
+.aim-dial-arrows .aim-snap-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(88, 166, 255, 0.2);
+}
+
+.game-main { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; min-height: 0; }
 
 .game-hud {
   display: flex;
@@ -516,6 +787,7 @@ body {
   height: 100%;
   cursor: crosshair;
   touch-action: none;
+  /* 尺寸由 .canvas-wrap 决定；backing store 在 JS 中按 DPR 设置 */
 }
 
 .mobile-controls {
@@ -524,9 +796,9 @@ body {
   left: 0;
   right: 0;
   bottom: 0;
-  padding: 12px 16px;
-  padding-bottom: max(12px, env(safe-area-inset-bottom));
-  gap: 12px;
+  padding: 10px 12px;
+  padding-bottom: max(10px, env(safe-area-inset-bottom));
+  gap: 8px;
   justify-content: center;
   align-items: center;
   z-index: 20;
@@ -534,10 +806,18 @@ body {
   background: linear-gradient(transparent, rgba(0, 0, 0, 0.55));
 }
 
+.mobile-fire-wrap {
+  position: relative;
+  flex: 1;
+  max-width: 120px;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
 .mobile-controls .touch-btn {
-  min-width: 56px;
-  min-height: 56px;
-  padding: 0 18px;
+  min-width: 48px;
+  min-height: 48px;
+  padding: 0 12px;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: rgba(15, 20, 25, 0.92);
@@ -555,9 +835,13 @@ body {
   border-color: var(--accent);
 }
 
+.mobile-fire-wrap .touch-fire,
 .mobile-controls .touch-fire {
+  width: 100%;
+  min-width: 0;
+  min-height: 48px;
+  max-width: none;
   flex: 1;
-  max-width: 140px;
   background: linear-gradient(135deg, rgba(245, 158, 11, 0.95), rgba(239, 68, 68, 0.95));
   border: none;
   color: #fff;
@@ -701,6 +985,19 @@ body {
     min-height: 36px;
   }
 
+  .sidebar-build .build-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    width: min(100%, 280px);
+  }
+
+  .sidebar-build .build-btn {
+    min-height: 44px;
+    padding: 8px 6px;
+    font-size: 11px;
+  }
+
   .sidebar-block {
     flex: 0 0 auto;
     min-width: min(220px, 78vw);
@@ -732,6 +1029,21 @@ body {
 
   .mobile-controls {
     display: flex;
+  }
+
+  .aim-dial {
+    top: 52px;
+    bottom: auto;
+    width: 132px;
+    height: 132px;
+    right: 8px;
+    left: auto;
+  }
+
+  .aim-dial-ring { inset: 18px; }
+
+  .aim-dial-arrows .aim-snap-btn {
+    transform: rotate(var(--pos, 90deg)) translateY(-54px) rotate(calc(-1 * var(--pos, 90deg)));
   }
 
   .hint { font-size: 10px; }

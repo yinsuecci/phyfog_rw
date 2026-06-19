@@ -8,9 +8,16 @@ import { Network } from './Network.js';
 
 import { GameLogic } from './GameLogic.js';
 
+import { GameSync } from './GameSync.js';
+
 import { MapRenderer } from './MapRenderer.js';
 
-import { BANDS, BUILD_COSTS } from './constants.js';
+import { AimDial } from './AimDial.js';
+
+import { BANDS, BUILD_COSTS, visibleColor, normalizeAngle } from './constants.js';
+
+/** 建设按钮显示顺序（太阳能板提前，避免手机横向滚动看不到） */
+const BUILD_ORDER = ['wall', 'mirror', 'lens', 'solar', 'attack_tower', 'lead'];
 
 
 
@@ -25,6 +32,7 @@ const SESSION_KEY = 'phyfog_session';
 
 
 const net = new Network();
+const gameSync = new GameSync();
 
 let game = null;
 
@@ -43,6 +51,13 @@ let buildMode = null;
 let buildEnergyInput = 20;
 
 let mirrorBuildAngle = 45;
+let lensBuildFocal = 5;
+
+let relocateMode = false;
+
+let aimDial = null;
+/** @type {'aim'|'mirrorBuild'} */
+let dialMode = 'aim';
 
 let radioMode = 'message';
 
@@ -53,13 +68,9 @@ let radioEnergyAmount = 5;
 let animId = null;
 
 let towerListDirty = true;
+let statusBarDirty = true;
 
 let rejoinAttempted = false;
-let lastStateRecvAt = 0;
-let lastStateSeq = 0;
-let lastServerWallTime = 0;
-let lastServerGameTime = 0;
-let lastServerSyncAt = 0;
 
 /** 大厅席位在线状态 { playerIndex, nickname, disconnected } */
 let roomPlayerStatus = [];
@@ -71,11 +82,7 @@ let connectionPendingSince = null;
 
 
 function getServerUrl() {
-
-  const v = $('#serverUrl')?.value.trim();
-
-  return v || window.location.origin;
-
+  return window.location.origin.replace(/\/$/, '');
 }
 
 
@@ -144,7 +151,7 @@ function connectNetwork() {
   const url = getServerUrl().replace(/\/$/, '') || window.location.origin;
   if (net.socket?.connected && net.serverUrl === url) {
     clearDisconnectNotice();
-    $('#connStatus').textContent = '已连接 ' + url;
+    $('#connStatus').textContent = '已连接';
     $('#connStatus').className = 'conn-status ok';
     return url;
   }
@@ -168,8 +175,6 @@ function restoreSessionFields() {
   const saved = loadSession();
 
   if (!saved) return;
-
-  if (saved.serverUrl && $('#serverUrl')) $('#serverUrl').value = saved.serverUrl;
 
   if (saved.nickname) {
 
@@ -221,7 +226,7 @@ function scheduleDisconnectNotice(message) {
 
 function onSocketConnected() {
   clearDisconnectNotice();
-  $('#connStatus').textContent = '已连接 ' + getServerUrl();
+  $('#connStatus').textContent = '已连接';
   $('#connStatus').className = 'conn-status ok';
   tryAutoRejoin();
 }
@@ -243,8 +248,6 @@ function onSocketConnectError(d) {
 }
 
 
-
-$('#serverUrl').addEventListener('change', () => connectNetwork());
 
 function resolveLocalPlayerIdx(players) {
   const me = (players || []).find(p => p.id === net.id);
@@ -433,11 +436,7 @@ $('#btnDoJoin').addEventListener('click', async () => {
 
 
 function updateLobbyServerHint() {
-
-  const url = getServerUrl();
-
-  $('#lobbyServerHint').textContent = '服务器: ' + url;
-
+  /* 已自动连接当前站点，无需显示服务器地址 */
 }
 
 
@@ -517,38 +516,37 @@ net.on('lobby:update', (data) => {
 
   updateLobbyControls();
 
-  if (game) updateStatusBar();
+  if (game) {
+    statusBarDirty = true;
+    updateStatusBar();
+  }
 
 });
 
 
 
 function getDisplayGameTime() {
-  if (!game) return 0;
-  if (game.paused || game.winner != null) return game.gameTime;
-  if (!lastServerSyncAt) return game.gameTime;
-  const elapsed = (Date.now() - lastServerSyncAt) / 1000;
-  return lastServerGameTime + elapsed;
+  return gameSync.getGameTime(game);
 }
 
 function applyServerState(state) {
-  if (!game || !state) return;
-  // 只接受递增的 stateSeq，避免同毫秒内的旧包因 serverTime 相同被误应用并覆盖操作
-  if (state.stateSeq != null) {
-    if (state.stateSeq <= lastStateSeq) return;
-    lastStateSeq = state.stateSeq;
-  } else if (state.serverTime != null && state.serverTime < lastServerWallTime) {
-    return;
-  }
-  if (state.serverTime != null) lastServerWallTime = state.serverTime;
-  game.applyState(state);
-  lastServerGameTime = state.gameTime ?? game.gameTime;
-  lastServerSyncAt = Date.now();
-  lastStateRecvAt = lastServerSyncAt;
+  if (!gameSync.apply(game, state, { localPlayerIdx })) return;
   setSyncOverlay(false);
   $('#pauseOverlay').classList.toggle('hidden', !game.paused);
   towerListDirty = true;
-  updateStatusBar();
+  statusBarDirty = true;
+}
+
+/** 将本地实时瞄准角度同步到服务器（不等待 ack） */
+function uploadLocalRotation() {
+  if (!game) return;
+  const aim = game.getAimRotation(localPlayerIdx);
+  if (!aim) return;
+  net.sendAction({
+    type: 'rotateSync',
+    angle: aim.angle,
+    towerKey: aim.towerKey,
+  }, { noAck: true });
 }
 
 net.on('game:start', (data) => {
@@ -562,11 +560,7 @@ net.on('game:start', (data) => {
   net.roomJoined = true;
   localPlayerIdx = resolveLocalPlayerIdx(data.players);
 
-  lastStateSeq = 0;
-  lastServerWallTime = 0;
-  lastServerGameTime = 0;
-  lastServerSyncAt = 0;
-
+  gameSync.reset();
   setSyncOverlay(false);
 
   syncRoomPlayerStatus(data.players);
@@ -592,11 +586,7 @@ net.on('game:rejoin', (data) => {
   net.roomJoined = true;
   localPlayerIdx = resolveLocalPlayerIdx(data.players);
 
-  lastStateSeq = 0;
-  lastServerWallTime = 0;
-  lastServerGameTime = 0;
-  lastServerSyncAt = 0;
-
+  gameSync.reset();
   setSyncOverlay(false);
 
   syncRoomPlayerStatus(data.players);
@@ -606,6 +596,16 @@ net.on('game:rejoin', (data) => {
   if (!game) {
 
     startGame(data.mapData, data.players);
+
+  } else {
+
+    showScreen('gameScreen');
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (renderer && game) renderer.resize(game.gridSize, game.cellSize);
+      });
+    });
 
   }
 
@@ -625,8 +625,6 @@ net.on('game:rejoin', (data) => {
 
   }
 
-  showScreen('gameScreen');
-
   saveSession();
 
   toast('已重新加入对局');
@@ -639,6 +637,11 @@ net.on('game:state', (state) => {
 
   applyServerState(state);
 
+});
+
+net.on('game:rotation', ({ playerIndex, angle, towerKey }) => {
+  if (!game || playerIndex === localPlayerIdx) return;
+  game.applyRemoteRotation(playerIndex, { angle, towerKey });
 });
 
 
@@ -679,21 +682,22 @@ function startGame(md, lobbyPlayers) {
 
   renderer = new MapRenderer($('#gameCanvas'), $('#canvasWrap'));
 
-  renderer.resize(game.gridSize, game.cellSize);
-
-
-
   buildBandUI();
 
   buildBuildUI();
 
   towerListDirty = true;
 
-  updateHUD();
-
-
-
   showScreen('gameScreen');
+
+  // 等布局完成后再量 canvas（双 rAF 确保 flex 高度已计算）
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      if (renderer && game) renderer.resize(game.gridSize, game.cellSize);
+    });
+  });
+
+  updateHUD();
 
   $('#gameRoomCode').textContent = net.roomCode;
 
@@ -709,6 +713,9 @@ function startGame(md, lobbyPlayers) {
 
   startGameLoop();
 
+  initAimDial();
+  aimDial?.syncFromGame();
+
 }
 
 
@@ -721,17 +728,28 @@ function startGameLoop() {
 
     if (game) {
 
-      if (lastStateRecvAt > 0 && now - lastStateRecvAt > 4000) {
-
-        setSyncOverlay(true, '等待服务器同步状态…');
-
+      if (gameSync.isStale(10000)) {
+        gameSync.softResync(game);
       }
+      const disconnected = !net.socket?.connected || !net.roomJoined;
+      setSyncOverlay(disconnected, disconnected ? '连接已断开，正在重连…' : '');
 
-      renderer.render(game, localPlayerIdx);
+      game.pruneExpiredRays();
+      aimDial?.tickSnap();
+      if (dialMode === 'mirrorBuild') {
+        aimDial?.updateIndicator(mirrorBuildAngle);
+      } else {
+        aimDial?.syncFromGame();
+      }
+      renderer.render(game, localPlayerIdx, getDisplayGameTime());
+      updateSolarInfoPanel();
 
       updateHUD();
 
-      updateStatusBar();
+      if (statusBarDirty) {
+        statusBarDirty = false;
+        updateStatusBar();
+      }
 
       if (towerListDirty) updateTowerListUI();
 
@@ -757,14 +775,13 @@ function stopGameLoop() {
 
   game = null;
 
+  renderer?.destroy();
   renderer = null;
 
-  lastStateRecvAt = 0;
+  gameSync.reset();
 
-  lastStateSeq = 0;
-  lastServerWallTime = 0;
-  lastServerGameTime = 0;
-  lastServerSyncAt = 0;
+  aimDial?.reset();
+  relocateMode = false;
 
 }
 
@@ -797,6 +814,7 @@ function updateFireCooldownUI() {
   const touchBtn = $('#btnFireTouch');
 
   const overlay = $('#fireCdOverlay');
+  const overlayTouch = $('#fireCdOverlayTouch');
 
   if (!game) return;
 
@@ -813,6 +831,7 @@ function updateFireCooldownUI() {
   const onCd = remaining > 0.02;
 
   if (overlay) overlay.style.width = `${ratio * 100}%`;
+  if (overlayTouch) overlayTouch.style.width = `${ratio * 100}%`;
 
   if (btn) btn.disabled = onCd;
 
@@ -1011,8 +1030,8 @@ function buildBandUI() {
       btn.classList.add('active');
 
       $('#visibleSlider').classList.toggle('hidden', b.id !== 'visible');
-
       $('#radioPanel').classList.toggle('hidden', b.id !== 'radio');
+      updateVisibleBandPanels();
 
     });
 
@@ -1020,23 +1039,122 @@ function buildBandUI() {
 
   });
 
+  updateVisibleBandPanels();
+
 }
 
 
 
+function updateVisibleBandPanels() {
+  const show = selectedBand === 'visible';
+  $('#visibleSlider')?.classList.toggle('hidden', !show);
+  $('#mobileVisibleBar')?.classList.toggle('is-visible', show);
+}
+
+const VISIBLE_ENERGY_NAMES = ['红', '橙', '黄', '绿', '蓝', '靛', '紫', '紫+', '紫++', '高紫'];
+
+function setVisibleEnergy(val) {
+  visibleEnergy = Math.max(1, Math.min(10, val));
+  const slider = $('#visibleEnergy');
+  if (slider) slider.value = String(visibleEnergy);
+  const label = `${visibleEnergy}J ${VISIBLE_ENERGY_NAMES[visibleEnergy - 1] || ''}`;
+  const valEl = $('#visibleEnergyVal');
+  const color = visibleColor(visibleEnergy);
+  const pct = ((visibleEnergy - 1) / 9) * 100;
+  if (valEl) {
+    valEl.textContent = label;
+    valEl.style.color = color;
+  }
+  if (slider) {
+    slider.value = String(visibleEnergy);
+    slider.style.accentColor = color;
+  }
+  const desktopFill = $('#visibleEnergyFill');
+  if (desktopFill) {
+    desktopFill.style.width = `${pct}%`;
+    desktopFill.style.background = color;
+  }
+  const mobileVal = $('#mobileVisibleEnergyVal');
+  if (mobileVal) {
+    mobileVal.textContent = label;
+    mobileVal.style.color = color;
+  }
+  const fill = $('#mobileVisibleFill');
+  const thumb = $('#mobileVisibleThumb');
+  const track = $('#mobileVisibleTrack');
+  if (fill) {
+    fill.style.width = `${pct}%`;
+    fill.style.background = color;
+  }
+  if (thumb) {
+    thumb.style.left = `${pct}%`;
+    thumb.style.borderColor = color;
+    thumb.style.boxShadow = `0 0 0 3px ${color}44`;
+  }
+  if (track) track.setAttribute('aria-valuenow', String(visibleEnergy));
+  $$('.mobile-visible-step').forEach((btn, i) => {
+    btn.classList.toggle('active', i + 1 === visibleEnergy);
+    if (i + 1 === visibleEnergy) btn.style.borderColor = color;
+    else btn.style.borderColor = '';
+  });
+}
+
+function initMobileVisibleBar() {
+  const track = $('#mobileVisibleTrack');
+  const steps = $('#mobileVisibleSteps');
+  if (!track || !steps) return;
+
+  steps.innerHTML = '';
+  for (let i = 1; i <= 10; i++) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'mobile-visible-step';
+    btn.textContent = String(i);
+    btn.setAttribute('aria-label', `${i}焦耳`);
+    bindTap(btn, () => setVisibleEnergy(i));
+    steps.appendChild(btn);
+  }
+
+  const pickEnergy = (clientX) => {
+    const rect = track.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    setVisibleEnergy(Math.round(ratio * 9) + 1);
+  };
+
+  track.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    track.setPointerCapture(e.pointerId);
+    pickEnergy(e.clientX);
+  });
+  track.addEventListener('pointermove', (e) => {
+    if (!track.hasPointerCapture(e.pointerId)) return;
+    e.preventDefault();
+    pickEnergy(e.clientX);
+  });
+  track.addEventListener('pointerup', (e) => {
+    try { track.releasePointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+  });
+  track.addEventListener('pointercancel', (e) => {
+    try { track.releasePointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+  });
+}
+
 function initControlSliders() {
   bindRangeSlider($('#visibleEnergy'), (e) => {
-    visibleEnergy = parseInt(e.target.value, 10);
-    const names = ['红', '橙', '黄', '绿', '蓝', '靛', '紫', '紫+', '紫++', '高紫'];
-    $('#visibleEnergyVal').textContent = visibleEnergy + 'J ' + (names[visibleEnergy - 1] || '');
+    setVisibleEnergy(parseInt(e.target.value, 10));
   });
+  initMobileVisibleBar();
+  setVisibleEnergy(visibleEnergy);
+  updateVisibleBandPanels();
   bindRangeSlider($('#buildEnergy'), (e) => {
     buildEnergyInput = parseInt(e.target.value, 10) || 10;
     $('#buildEnergyVal').textContent = buildEnergyInput + 'J';
   });
-  bindRangeSlider($('#mirrorBuildAngle'), (e) => {
-    mirrorBuildAngle = parseInt(e.target.value, 10) || 0;
-    $('#mirrorBuildAngleVal').textContent = mirrorBuildAngle + '°';
+  bindRangeSlider($('#lensBuildFocal'), (e) => {
+    lensBuildFocal = parseInt(e.target.value, 10) || 5;
+    $('#lensBuildFocalVal').textContent = lensBuildFocal;
   });
   $('#radioMsg')?.addEventListener('input', (e) => { radioMessage = e.target.value; });
   $('#radioEnergyAmt')?.addEventListener('input', (e) => { radioEnergyAmount = parseInt(e.target.value, 10) || 0; });
@@ -1053,7 +1171,9 @@ function buildBuildUI() {
 
   box.innerHTML = '';
 
-  Object.entries(BUILD_COSTS).forEach(([id, cfg]) => {
+  BUILD_ORDER.forEach((id) => {
+    const cfg = BUILD_COSTS[id];
+    if (!cfg) return;
 
     const btn = document.createElement('button');
 
@@ -1067,13 +1187,17 @@ function buildBuildUI() {
 
       $$('.build-btn').forEach(x => x.classList.remove('active'));
 
-      if (buildMode) btn.classList.add('active');
+      if (buildMode) {
+        btn.classList.add('active');
+        setRelocateMode(false);
+      }
 
       const cfgItem = BUILD_COSTS[id];
 
       $('#buildEnergyPanel').classList.toggle('hidden', !buildMode || !cfgItem?.hpFromEnergy && !cfgItem?.hpFromHalfEnergy);
 
-      $('#mirrorBuildPanel').classList.toggle('hidden', buildMode !== 'mirror');
+      $('#lensBuildPanel').classList.toggle('hidden', buildMode !== 'lens');
+      updateDialForBuildMode();
 
       if (buildMode !== 'lens') renderer?.clearLensSelection();
 
@@ -1131,21 +1255,45 @@ function bindRangeSlider(el, onInput) {
   if (!el) return;
   const stop = (e) => e.stopPropagation();
   el.addEventListener('input', onInput);
+  el.addEventListener('change', onInput);
   el.addEventListener('pointerdown', stop);
-  el.addEventListener('touchstart', stop, { passive: true });
-  el.addEventListener('touchmove', stop, { passive: true });
+  el.addEventListener('pointermove', stop);
+  el.addEventListener('touchstart', stop, { passive: false });
+  el.addEventListener('touchmove', stop, { passive: false });
 }
 
 function handleCanvasTap(clientX, clientY) {
   if (!game || !renderer) return;
   const { x, y } = renderer.screenToGrid(clientX, clientY);
 
+  if (relocateMode) {
+    sendAction({ type: 'relocateMain', x, y });
+    setRelocateMode(false);
+    return;
+  }
+
   if (buildMode) {
     const payload = { type: 'build', buildType: buildMode, x, y, energyInput: buildEnergyInput };
     if (buildMode === 'mirror') payload.mirrorAngle = mirrorBuildAngle;
+    if (buildMode === 'lens') payload.lensFocal = lensBuildFocal;
     sendAction(payload);
     return;
   }
+
+  const cellEl = game.cells[`${x},${y}`];
+  if (cellEl?.type === 'solar' && game.canSee(localPlayerIdx, x, y)) {
+    if (renderer.selectedSolar?.x === x && renderer.selectedSolar?.y === y) {
+      renderer.clearSolarSelection();
+    } else {
+      renderer.selectSolarAt(game, localPlayerIdx, x, y);
+      renderer.clearLensSelection();
+    }
+    updateSolarInfoPanel();
+    return;
+  }
+
+  renderer.clearSolarSelection();
+  updateSolarInfoPanel();
 
   if (renderer.selectLensAt(game, localPlayerIdx, x, y)) {
     const el = game.cells[`${x},${y}`];
@@ -1153,6 +1301,96 @@ function handleCanvasTap(clientX, clientY) {
     return;
   }
   renderer.clearLensSelection();
+}
+
+function setRelocateMode(on) {
+  relocateMode = !!on;
+  const btn = $('#btnRelocateMain');
+  if (btn) btn.classList.toggle('active', relocateMode);
+  if (relocateMode) {
+    buildMode = null;
+    $$('.build-btn').forEach((x) => x.classList.remove('active'));
+    $('#buildEnergyPanel')?.classList.add('hidden');
+    $('#lensBuildPanel')?.classList.add('hidden');
+    updateDialForBuildMode();
+    toast('点击视野内空格移动主光塔 (40J)');
+  }
+}
+
+function updateSolarInfoPanel() {
+  const panel = $('#solarInfoPanel');
+  const text = $('#solarInfoText');
+  if (!panel || !text || !game) return;
+  const sel = renderer?.selectedSolar;
+  if (!sel) {
+    panel.classList.add('hidden');
+    return;
+  }
+  const el = game.cells[`${sel.x},${sel.y}`];
+  if (!el || el.type !== 'solar') {
+    panel.classList.add('hidden');
+    return;
+  }
+  const per10 = el.energyPer10s ?? 2;
+  const rate = el.conversionRate ?? 0.6;
+  const owner = el.owner != null ? game.players[el.owner] : null;
+  panel.classList.remove('hidden');
+  text.innerHTML = `位置 (${sel.x}, ${sel.y})<br>`
+    + `每 <strong>10 秒</strong> 产出 <strong>${per10}J</strong><br>`
+    + `低能转化倍率 <strong>${rate}</strong>（可见光 &lt;3J 照射）<br>`
+    + `归属：${owner ? (owner.nickname || `P${el.owner + 1}`) : '中立'}`;
+}
+
+function setLocalAimAbsolute(angle) {
+  if (!game || game.paused) return;
+  const a = normalizeAngle(angle);
+  const aim = game.getAimRotation(localPlayerIdx);
+  if (!aim) return;
+  if (aim.towerKey) {
+    const el = game.cells[aim.towerKey];
+    if (el) el.angle = a;
+  } else {
+    game.players[localPlayerIdx].angle = a;
+  }
+  uploadLocalRotation();
+}
+
+function updateDialForBuildMode() {
+  const dialEl = $('#aimDial');
+  const hint = dialEl?.querySelector('.aim-dial-hint');
+  if (buildMode === 'mirror') {
+    dialMode = 'mirrorBuild';
+    dialEl?.classList.remove('hidden');
+    if (hint) hint.textContent = '镜面方向';
+    aimDial?.reset();
+    aimDial?.updateIndicator(mirrorBuildAngle);
+  } else if (buildMode) {
+    dialMode = 'aim';
+    dialEl?.classList.add('hidden');
+  } else {
+    dialMode = 'aim';
+    dialEl?.classList.remove('hidden');
+    if (hint) hint.textContent = '长按瞄准';
+    aimDial?.syncFromGame();
+  }
+}
+
+function initAimDial() {
+  const el = $('#aimDial');
+  if (!el) return;
+  if (!aimDial) {
+    aimDial = new AimDial(el, {
+      getAngle: () => (dialMode === 'mirrorBuild' ? mirrorBuildAngle : getLocalAimAngle()),
+      onAngleChange: (angle) => {
+        if (dialMode === 'mirrorBuild') {
+          mirrorBuildAngle = Math.round(normalizeAngle(angle));
+        } else {
+          setLocalAimAbsolute(angle);
+        }
+      },
+    });
+  }
+  updateDialForBuildMode();
 }
 
 document.addEventListener('keydown', (e) => {
@@ -1165,19 +1403,10 @@ document.addEventListener('keydown', (e) => {
 bindTap($('#btnFire'), fire);
 bindTap($('#btnFireTouch'), fire);
 
-const rotateLeft = () => {
+bindTap($('#btnRelocateMain'), () => {
   if (!game || game.paused) return;
-  sendAction({ type: 'rotate', delta: -5 });
-};
-const rotateRight = () => {
-  if (!game || game.paused) return;
-  sendAction({ type: 'rotate', delta: 5 });
-};
-
-bindHold($('#btnRotateL'), rotateLeft);
-bindHold($('#btnRotateR'), rotateRight);
-
-
+  setRelocateMode(!relocateMode);
+});
 
 function fire() {
 
@@ -1199,11 +1428,15 @@ function fire() {
 
   }
 
-  sendAction({ type: 'shoot', bandId: selectedBand, bandEnergy, radioPayload });
+  sendAction({ type: 'shoot', bandId: selectedBand, bandEnergy, radioPayload, aimAngle: getLocalAimAngle() });
 
 }
 
 
+
+function getLocalAimAngle() {
+  return game?.getAimRotation(localPlayerIdx)?.angle ?? 0;
+}
 
 function sendAction(action) {
 
@@ -1215,16 +1448,26 @@ function sendAction(action) {
     return;
   }
 
-  // 轻量本地预测：旋转/切塔立即有反馈，最终以服务器 state 为准
   if (action.type === 'rotate') {
     game.rotate(localPlayerIdx, action.delta);
-  } else if (action.type === 'switchTower') {
-    game.switchTower(localPlayerIdx, action.towerType, action.key);
-    renderer?.resetUserZoom();
+    uploadLocalRotation();
+    aimDial?.syncFromGame();
+    return;
   }
 
-  const noAck = action.type === 'rotate';
-  net.sendAction(action, { noAck }).then((res) => {
+  if (action.type === 'relocateMain') {
+    net.sendAction(action).then((res) => {
+      if (res && !res.ok) toast(res.error || '易位失败', true);
+      else towerListDirty = true;
+    });
+    return;
+  }
+
+  if (action.type === 'shoot' && action.aimAngle == null) {
+    action.aimAngle = getLocalAimAngle();
+  }
+
+  net.sendAction(action).then((res) => {
     if (res && !res.ok) toast(res.error || '操作被拒绝', true);
   });
 
@@ -1234,11 +1477,20 @@ function sendAction(action) {
 
 
 
-// 滚轮缩放（不可拖屏平移）
-
+// 滚轮缩放 + 触控平移/捏合缩放
 const canvasWrap = $('#canvasWrap');
 
 const gameCanvas = $('#gameCanvas');
+
+const canvasPointers = new Map();
+let canvasPanActive = false;
+let canvasLastPinchDist = null;
+
+function getPinchDistance() {
+  const pts = [...canvasPointers.values()];
+  if (pts.length < 2) return null;
+  return Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+}
 
 if (canvasWrap) {
 
@@ -1254,7 +1506,50 @@ if (canvasWrap) {
 
   }, { passive: false });
 
+  canvasWrap.addEventListener('pointerdown', (e) => {
+    if (e.target.closest?.('.mobile-controls')) return;
+    canvasPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (canvasPointers.size === 2) {
+      canvasLastPinchDist = getPinchDistance();
+      canvasPanActive = false;
+    }
+  });
+
+  canvasWrap.addEventListener('pointermove', (e) => {
+    if (!game || !renderer || !canvasPointers.has(e.pointerId)) return;
+    const prev = canvasPointers.get(e.pointerId);
+    canvasPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    if (canvasPointers.size >= 2) {
+      const dist = getPinchDistance();
+      if (dist != null && canvasLastPinchDist != null) {
+        renderer.setUserZoom((dist - canvasLastPinchDist) * 0.004);
+      }
+      canvasLastPinchDist = dist;
+      canvasPanActive = false;
+      return;
+    }
+
+    const dx = e.clientX - prev.x;
+    const dy = e.clientY - prev.y;
+    if (Math.hypot(dx, dy) > 6) canvasPanActive = true;
+    if (canvasPanActive) {
+      renderer.addUserPan(-dx / renderer.camera.zoom, -dy / renderer.camera.zoom);
+    }
+  });
+
+  const endCanvasPointer = (e) => {
+    canvasPointers.delete(e.pointerId);
+    if (canvasPointers.size < 2) canvasLastPinchDist = null;
+    if (canvasPointers.size === 0) canvasPanActive = false;
+  };
+
+  canvasWrap.addEventListener('pointerup', endCanvasPointer);
+  canvasWrap.addEventListener('pointercancel', endCanvasPointer);
 }
+
+bindTap($('#btnZoomIn'), () => { if (renderer) renderer.setUserZoom(0.12); });
+bindTap($('#btnZoomOut'), () => { if (renderer) renderer.setUserZoom(-0.12); });
 
 if (gameCanvas) {
   let canvasPointerId = null;
@@ -1274,7 +1569,7 @@ if (gameCanvas) {
     canvasPointerId = null;
     try { gameCanvas.releasePointerCapture(e.pointerId); } catch (_) { /* ignore */ }
     const moved = Math.hypot(e.clientX - canvasDownX, e.clientY - canvasDownY);
-    if (moved > 14) return;
+    if (moved > 14 || canvasPanActive) return;
     if (e.target.closest?.('.mobile-controls')) return;
     handleCanvasTap(e.clientX, e.clientY);
   });
@@ -1343,6 +1638,7 @@ bindTap($('#btnSwitchMain'), () => {
   sendAction({ type: 'switchTower', towerType: 'main' });
 
   renderer?.clearLensSelection();
+  aimDial?.syncFromGame();
 
 });
 
@@ -1393,6 +1689,7 @@ function toast(msg, isError = false) {
 
 
 initControlSliders();
+initAimDial();
 
 showScreen('entryScreen');
 

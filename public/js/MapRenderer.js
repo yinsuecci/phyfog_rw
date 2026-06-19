@@ -1,7 +1,7 @@
 /**
  * MapRenderer.js — 相机锁定控制塔、战争迷雾、光束渲染
  */
-import { BANDS, visibleColor } from './constants.js';
+import { BANDS, visibleColor, normalizeAngle } from './constants.js';
 import { getMirrorSegment } from './mirrorUtils.js';
 
 export class MapRenderer {
@@ -13,12 +13,36 @@ export class MapRenderer {
     this.gridSize = 100;
     this.pulsePhase = 0;
     this.camera = { x: 0, y: 0, zoom: 1 };
-    /** 玩家手动缩放倍率（滚轮），不可平移 */
     this.userZoom = 1;
     this.userZoomMin = 0.35;
     this.userZoomMax = 3.5;
-    /** 选中的透镜 { x, y, focal } */
+    this.userPan = { x: 0, y: 0 };
+    this._panLimit = 1200;
     this.selectedLens = null;
+    this.selectedSolar = null;
+    this._displayTime = 0;
+    this._viewportW = 0;
+    this._viewportH = 0;
+    this._dpr = 1;
+    /** 本地平滑显示角度（仅渲染，不改游戏状态） */
+    this._smoothAngles = {};
+  }
+
+  _smoothAngle(key, targetDeg) {
+    const target = normalizeAngle(targetDeg);
+    let cur = this._smoothAngles[key];
+    if (cur == null) {
+      this._smoothAngles[key] = target;
+      return target;
+    }
+    let diff = target - cur;
+    while (diff > 180) diff -= 360;
+    while (diff < -180) diff += 360;
+    if (Math.abs(diff) < 0.25) cur = target;
+    else cur += diff * 0.55;
+    cur = normalizeAngle(cur);
+    this._smoothAngles[key] = cur;
+    return cur;
   }
 
   setUserZoom(delta) {
@@ -27,6 +51,13 @@ export class MapRenderer {
 
   resetUserZoom() {
     this.userZoom = 1;
+    this.userPan = { x: 0, y: 0 };
+  }
+
+  addUserPan(dx, dy) {
+    const lim = this._panLimit * this.userZoom;
+    this.userPan.x = Math.max(-lim, Math.min(lim, this.userPan.x + dx));
+    this.userPan.y = Math.max(-lim, Math.min(lim, this.userPan.y + dy));
   }
 
   selectLensAt(game, localPlayerIdx, gx, gy) {
@@ -44,51 +75,95 @@ export class MapRenderer {
     this.selectedLens = null;
   }
 
+  selectSolarAt(game, localPlayerIdx, gx, gy) {
+    const el = game.cells[`${gx},${gy}`];
+    if (el?.type === 'solar' && game.canSee(localPlayerIdx, gx, gy)) {
+      this.selectedSolar = { x: gx, y: gy };
+      return el;
+    }
+    this.selectedSolar = null;
+    return null;
+  }
+
+  clearSolarSelection() {
+    this.selectedSolar = null;
+  }
+
   resize(gridSize, cellSize) {
     this.gridSize = gridSize;
     this.cellSize = cellSize;
+    if (!this._resizeObserver && this.wrapEl && typeof ResizeObserver !== 'undefined') {
+      this._resizeObserver = new ResizeObserver(() => this._resizeViewport());
+      this._resizeObserver.observe(this.wrapEl);
+    }
+    if (!this._onWindowResize) {
+      this._onWindowResize = () => this._resizeViewport();
+      window.addEventListener('resize', this._onWindowResize);
+    }
+    this._viewportW = 0;
+    this._viewportH = 0;
     this._resizeViewport();
-    window.addEventListener('resize', () => this._resizeViewport());
+  }
+
+  destroy() {
+    this._resizeObserver?.disconnect();
+    this._resizeObserver = null;
+  }
+
+  _measureWrap() {
+    if (!this.wrapEl) return { w: 1, h: 1 };
+    const rect = this.wrapEl.getBoundingClientRect();
+    let w = Math.floor(rect.width);
+    let h = Math.floor(rect.height);
+    if (w < 2 || h < 2) {
+      w = Math.max(w, this.wrapEl.clientWidth | 0);
+      h = Math.max(h, this.wrapEl.clientHeight | 0);
+    }
+    return { w: Math.max(1, w), h: Math.max(1, h) };
   }
 
   _resizeViewport() {
-    if (!this.wrapEl) return;
-    const w = this.wrapEl.clientWidth;
-    const h = this.wrapEl.clientHeight;
-    this.canvas.width = w;
-    this.canvas.height = h;
-    this.canvas.style.width = w + 'px';
-    this.canvas.style.height = h + 'px';
+    if (!this.wrapEl || !this.canvas) return;
+    const { w, h } = this._measureWrap();
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    if (w === this._viewportW && h === this._viewportH && dpr === this._dpr) return;
+
+    this._viewportW = w;
+    this._viewportH = h;
+    this._dpr = dpr;
+    this.canvas.width = Math.round(w * dpr);
+    this.canvas.height = Math.round(h * dpr);
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.ctx.imageSmoothingEnabled = true;
   }
 
-  /** 更新相机：中心锁定控制塔，缩放仅由滚轮控制 */
-  _updateCamera(game, localPlayerIdx) {
-    const pos = game.getActiveTowerPos(localPlayerIdx);
-    const cs = this.cellSize;
-    const towerWx = (pos.x + 0.5) * cs;
-    const towerWy = (pos.y + 0.5) * cs;
+  _viewSize() {
+    return { w: this._viewportW || 1, h: this._viewportH || 1 };
+  }
 
-    this.camera.x = towerWx;
-    this.camera.y = towerWy;
+  _updateCamera(game, localPlayerIdx) {
+    const p = game.players[localPlayerIdx];
+    const pos = p
+      ? game.getActiveTowerPos(localPlayerIdx)
+      : { x: game.gridSize / 2, y: game.gridSize / 2, angle: 0 };
+    const cs = this.cellSize;
+    this.camera.x = (pos.x + 0.5) * cs + this.userPan.x;
+    this.camera.y = (pos.y + 0.5) * cs + this.userPan.y;
     this.camera.zoom = Math.max(0.08, Math.min(this.userZoom, 6));
   }
 
-  /** 世界坐标 → 屏幕坐标 */
   worldToScreen(wx, wy) {
     const { x, y, zoom } = this.camera;
-    const vw = this.canvas.width;
-    const vh = this.canvas.height;
+    const { w: vw, h: vh } = this._viewSize();
     return {
       x: (wx - x) * zoom + vw / 2,
       y: (wy - y) * zoom + vh / 2,
     };
   }
 
-  /** 屏幕坐标 → 世界坐标 */
   screenToWorld(sx, sy) {
     const { x, y, zoom } = this.camera;
-    const vw = this.canvas.width;
-    const vh = this.canvas.height;
+    const { w: vw, h: vh } = this._viewSize();
     return {
       x: (sx - vw / 2) / zoom + x,
       y: (sy - vh / 2) / zoom + y,
@@ -99,24 +174,34 @@ export class MapRenderer {
     const rect = this.canvas.getBoundingClientRect();
     const sx = clientX - rect.left;
     const sy = clientY - rect.top;
-    const w = this.screenToWorld(sx, sy);
+    const scaleX = this._viewportW / (rect.width || 1);
+    const scaleY = this._viewportH / (rect.height || 1);
+    const w = this.screenToWorld(sx * scaleX, sy * scaleY);
     return {
       x: Math.floor(w.x / this.cellSize),
       y: Math.floor(w.y / this.cellSize),
     };
   }
 
-  render(game, localPlayerIdx) {
+  render(game, localPlayerIdx, displayTime = 0) {
+    if (!game) return;
+    this._displayTime = displayTime;
     this._resizeViewport();
     this._updateCamera(game, localPlayerIdx);
 
     const ctx = this.ctx;
     const cs = this.cellSize;
     const gs = game.gridSize;
-    const vw = this.canvas.width;
-    const vh = this.canvas.height;
-    const local = game.players[localPlayerIdx];
-    const vg = local?.visionGrid;
+    const { w: vw, h: vh } = this._viewSize();
+
+    const seeCache = new Map();
+    const canSee = (gx, gy) => {
+      const k = gx * 100000 + gy;
+      if (seeCache.has(k)) return seeCache.get(k);
+      const v = game.canSee(localPlayerIdx, gx, gy);
+      seeCache.set(k, v);
+      return v;
+    };
 
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, vw, vh);
@@ -132,7 +217,6 @@ export class MapRenderer {
     const minGy = Math.max(0, Math.floor((this.camera.y - viewWorldR) / cs));
     const maxGy = Math.min(gs - 1, Math.ceil((this.camera.y + viewWorldR) / cs));
 
-    // 网格
     ctx.strokeStyle = '#1e1e1e';
     ctx.lineWidth = 1 / this.camera.zoom;
     for (let i = minGx; i <= maxGx + 1; i++) {
@@ -148,36 +232,41 @@ export class MapRenderer {
       ctx.stroke();
     }
 
-    // 先画可见内容
     for (let gy = minGy; gy <= maxGy; gy++) {
       for (let gx = minGx; gx <= maxGx; gx++) {
-        if (!game.canSee(localPlayerIdx, gx, gy)) continue;
-        const key = `${gx},${gy}`;
-        const el = game.cells[key];
+        if (!canSee(gx, gy)) continue;
+        const el = game.cells[`${gx},${gy}`];
         if (el) this._drawElement(el, cs, game, localPlayerIdx);
       }
     }
 
     game.beacons.forEach(b => {
-      if (game.canSee(localPlayerIdx, b.x, b.y)) {
-        this._drawBeacon(b, cs, game.players[b.owner]);
-      }
+      if (canSee(b.x, b.y)) this._drawBeacon(b, cs, game.players[b.owner]);
     });
 
     game.players.forEach((p, i) => {
-      if (!p.alive) return;
-      const visible = game.canSee(localPlayerIdx, p.towerX, p.towerY);
-      if (!visible) return;
+      if (!p?.alive) return;
+      if (!canSee(p.towerX, p.towerY)) return;
       const isControlled = i === localPlayerIdx;
       const onAttack = isControlled && p.activeTower?.type === 'attack' && p.activeTower.key;
       if (onAttack) {
         this._drawTower(p.towerX, p.towerY, 0, cs, p.color, 'P' + (i + 1), false, false);
+        const atkEl = game.cells[p.activeTower.key];
+        if (atkEl) {
+          const atkAngle = isControlled
+            ? (atkEl.angle ?? 0)
+            : this._smoothAngle(`remote-atk-${i}-${p.activeTower.key}`, atkEl.angle ?? 0);
+          this._drawTower(atkEl.x, atkEl.y, atkAngle, cs, p.color, '⚔', true, true);
+        }
       } else {
-        this._drawTower(p.towerX, p.towerY, p.angle, cs, p.color, 'P' + (i + 1), isControlled, true);
+        const angle = isControlled
+          ? p.angle
+          : this._smoothAngle(`remote-main-${i}`, p.angle);
+        this._drawTower(p.towerX, p.towerY, angle, cs, p.color, 'P' + (i + 1), isControlled, true);
       }
     });
 
-    // 视野圈（当前控制塔）
+    const local = game.players[localPlayerIdx];
     if (local?.alive) {
       const pos = game.getActiveTowerPos(localPlayerIdx);
       const cx = (pos.x + 0.5) * cs;
@@ -193,19 +282,17 @@ export class MapRenderer {
     this.pulsePhase += 0.08;
     (game.activeRays || []).forEach(ray => this._drawRay(ray, cs));
 
-    // 战争迷雾：覆盖不可见格子
     for (let gy = minGy; gy <= maxGy; gy++) {
       for (let gx = minGx; gx <= maxGx; gx++) {
-        if (game.canSee(localPlayerIdx, gx, gy)) continue;
+        if (canSee(gx, gy)) continue;
         ctx.fillStyle = 'rgba(0,0,0,0.92)';
         ctx.fillRect(gx * cs, gy * cs, cs, cs);
       }
     }
 
-    // 透镜聚焦圈（在迷雾之上，点击选中后显示）
     if (this.selectedLens) {
       const el = game.cells[`${this.selectedLens.x},${this.selectedLens.y}`];
-      if (el?.type === 'lens' && game.canSee(localPlayerIdx, this.selectedLens.x, this.selectedLens.y)) {
+      if (el?.type === 'lens' && canSee(this.selectedLens.x, this.selectedLens.y)) {
         const focal = el.focal ?? this.selectedLens.focal ?? 5;
         this._drawFocusCircle(ctx, cs, this.selectedLens.x, this.selectedLens.y, focal, true);
       } else {
@@ -215,7 +302,6 @@ export class MapRenderer {
 
     ctx.restore();
 
-    // HUD
     ctx.fillStyle = 'rgba(255,255,255,0.35)';
     ctx.font = '11px sans-serif';
     ctx.textAlign = 'right';
@@ -223,7 +309,7 @@ export class MapRenderer {
     ctx.textAlign = 'left';
     const lensHint = this.selectedLens
       ? `透镜聚焦圈 f=${game.cells[`${this.selectedLens.x},${this.selectedLens.y}`]?.focal ?? '?'}格`
-      : '滚轮缩放 · 点击透镜显示聚焦圈';
+      : '滚轮/双指缩放 · 单指拖屏 · 点击透镜显示聚焦圈';
     ctx.fillText(lensHint, 8, vh - 8);
   }
 
@@ -264,10 +350,48 @@ export class MapRenderer {
         }
         break;
       }
-      case 'solar':
-        ctx.fillStyle = '#fbbf2444'; ctx.fillRect(x + pad, y + pad, cs - pad * 2, cs - pad * 2);
-        ctx.fillStyle = '#fbbf24'; ctx.font = `${cs * 0.35}px sans-serif`;
-        ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('☀', cx, cy); break;
+      case 'solar': {
+        const isSel = this.selectedSolar?.x === el.x && this.selectedSolar?.y === el.y;
+        if (isSel) {
+          ctx.strokeStyle = '#fbbf24';
+          ctx.lineWidth = 2 / this.camera.zoom;
+          ctx.strokeRect(x + 1, y + 1, cs - 2, cs - 2);
+        }
+        ctx.fillStyle = '#fbbf2444';
+        ctx.fillRect(x + pad, y + pad, cs - pad * 2, cs - pad * 2);
+        if (el.owner != null) {
+          const owner = game.players[el.owner];
+          if (owner) {
+            const tag = 'P' + (el.owner + 1);
+            const tagW = Math.max(cs * 0.58, cs * 0.22 * tag.length);
+            const tagH = cs * 0.26;
+            const tagX = cx - tagW / 2;
+            const tagY = y + 1;
+            ctx.fillStyle = owner.color;
+            if (typeof ctx.roundRect === 'function') {
+              ctx.beginPath();
+              ctx.roundRect(tagX, tagY, tagW, tagH, 3 / this.camera.zoom);
+              ctx.fill();
+            } else {
+              ctx.fillRect(tagX, tagY, tagW, tagH);
+            }
+            ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+            ctx.lineWidth = 1 / this.camera.zoom;
+            ctx.stroke();
+            ctx.fillStyle = '#fff';
+            ctx.font = `bold ${Math.max(9, cs * 0.19)}px sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(tag, cx, tagY + tagH / 2);
+          }
+        }
+        ctx.fillStyle = '#fbbf24';
+        ctx.font = `${cs * 0.32}px sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('☀', cx, cy + cs * 0.06);
+        break;
+      }
       case 'attack_tower': {
         const owner = el.owner != null ? game.players[el.owner] : null;
         const color = owner?.color ?? '#94a3b8';
@@ -282,7 +406,14 @@ export class MapRenderer {
     if (el.hp != null && el.maxHp) {
       const ratio = Math.max(0, el.hp / el.maxHp);
       ctx.fillStyle = ratio > 0.5 ? '#3fb950' : '#f85149';
-      ctx.fillRect(x + 2, y + cs - 5, (cs - 4) * ratio, 3);
+      ctx.fillRect(x + 2, y + cs - 7, (cs - 4) * ratio, 3);
+    }
+    if (el.type === 'solar') {
+      const prog = (this._displayTime % 10) / 10;
+      ctx.fillStyle = 'rgba(0,0,0,0.45)';
+      ctx.fillRect(x + 2, y + cs - 3, cs - 4, 2);
+      ctx.fillStyle = '#fbbf24';
+      ctx.fillRect(x + 2, y + cs - 3, (cs - 4) * prog, 2);
     }
   }
 
@@ -314,7 +445,6 @@ export class MapRenderer {
     ctx.setLineDash([6 / this.camera.zoom, 4 / this.camera.zoom]);
     ctx.stroke();
     ctx.setLineDash([]);
-    // 格心标记
     ctx.fillStyle = '#67e8f9';
     ctx.beginPath();
     ctx.arc(lx, ly, 3 / this.camera.zoom, 0, Math.PI * 2);
@@ -412,4 +542,3 @@ export class MapRenderer {
     }
   }
 }
-

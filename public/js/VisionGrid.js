@@ -30,7 +30,6 @@ export class VisionGrid {
     return x >= 0 && y >= 0 && x < this.gridSize && y < this.gridSize;
   }
 
-  /** 以 (cx,cy) 为圆心、r 为半径（格）揭示圆形区域 */
   revealCircle(cx, cy, r) {
     const r2 = r * r;
     for (let dy = -r; dy <= r; dy++) {
@@ -42,10 +41,15 @@ export class VisionGrid {
     }
   }
 
-  /** 从序列化二维数组恢复 */
   static fromArray(gridSize, arr) {
     const v = new VisionGrid(gridSize);
     if (!arr?.length) return v;
+    if (!Array.isArray(arr[0])) {
+      for (let i = 0; i + 1 < arr.length; i += 2) {
+        v.set(arr[i], arr[i + 1]);
+      }
+      return v;
+    }
     for (let y = 0; y < gridSize; y++) {
       for (let x = 0; x < gridSize; x++) {
         v.grid[y][x] = !!arr[y]?.[x];
@@ -58,7 +62,6 @@ export class VisionGrid {
     return this.grid.map(row => [...row]);
   }
 
-  /** 统计可见格子数（用于动态缩放视角） */
   visibleCount() {
     let n = 0;
     for (let y = 0; y < this.gridSize; y++) {
@@ -69,7 +72,6 @@ export class VisionGrid {
     return n;
   }
 
-  /** 可见区域包围盒半径（格，相对中心） */
   boundingRadius(cx, cy) {
     let maxR = 0;
     for (let y = 0; y < this.gridSize; y++) {

@@ -211,6 +211,111 @@
       font-variant-numeric: tabular-nums;
     }
 
+    .mirror-angle-dial-wrap {
+      display: flex;
+      justify-content: center;
+      margin: 4px 0 10px;
+    }
+
+    .mirror-param-dial.aim-dial {
+      position: relative;
+      width: 132px;
+      height: 132px;
+      pointer-events: auto;
+      touch-action: none;
+      user-select: none;
+    }
+
+    .mirror-param-dial .aim-dial-ring,
+    .mirror-param-dial .aim-dial-arrows,
+    .mirror-param-dial .aim-dial-arrows .aim-snap-btn {
+      pointer-events: auto;
+    }
+
+    .mirror-param-dial .aim-dial-ring {
+      position: absolute;
+      inset: 18px;
+      border-radius: 50%;
+      border: 2px solid rgba(88, 166, 255, 0.45);
+      background: rgba(13, 17, 23, 0.88);
+      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: crosshair;
+      touch-action: none;
+    }
+
+    .mirror-param-dial.is-aiming .aim-dial-ring {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.25);
+    }
+
+    .mirror-param-dial .aim-dial-hint {
+      position: absolute;
+      font-size: 10px;
+      color: var(--text-muted);
+      pointer-events: none;
+    }
+
+    .mirror-param-dial.is-aiming .aim-dial-hint { opacity: 0; }
+
+    .mirror-param-dial .aim-dial-indicator {
+      position: absolute;
+      inset: 0;
+      transform-origin: center center;
+      pointer-events: none;
+    }
+
+    .mirror-param-dial .aim-dial-indicator span {
+      position: absolute;
+      left: calc(50% + 5px);
+      top: 50%;
+      width: 0;
+      height: 0;
+      margin-top: -6px;
+      border-top: 6px solid transparent;
+      border-bottom: 6px solid transparent;
+      border-left: 12px solid var(--accent);
+      filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.5));
+    }
+
+    .mirror-param-dial .aim-dial-arrows {
+      position: absolute;
+      inset: 0;
+    }
+
+    .mirror-param-dial .aim-dial-arrows .aim-snap-btn {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 20px;
+      height: 20px;
+      margin: -10px;
+      padding: 0;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: rgba(15, 20, 25, 0.92);
+      color: var(--text-muted);
+      font-size: 9px;
+      line-height: 1;
+      cursor: pointer;
+      transform: rotate(var(--pos, 90deg)) translateY(-54px) rotate(calc(-1 * var(--pos, 90deg)));
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .mirror-param-dial .aim-dial-arrows .aim-snap-btn span {
+      display: block;
+    }
+
+    .mirror-param-dial .aim-dial-arrows .aim-snap-btn.active,
+    .mirror-param-dial .aim-dial-arrows .aim-snap-btn:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: rgba(88, 166, 255, 0.2);
+    }
+
     .player-rotate-list {
       display: flex;
       flex-direction: column;
@@ -259,6 +364,32 @@
 
     .export-btn:hover {
       background: var(--accent-hover);
+    }
+
+    .import-btn {
+      width: 100%;
+      padding: 10px;
+      margin-bottom: 8px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+    }
+
+    .import-btn:hover {
+      border-color: var(--accent);
+      background: #1f3a5f33;
+    }
+
+    .import-status {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 6px;
+      word-break: break-all;
     }
 
     .sidebar-footer {
@@ -432,8 +563,17 @@
         </div>
       </div>
       <div id="paramMirror" style="display:none">
+        <div class="mirror-angle-dial-wrap">
+          <div id="mirrorAngleDial" class="aim-dial mirror-param-dial" aria-label="镜面方向">
+            <div class="aim-dial-arrows"></div>
+            <div class="aim-dial-ring">
+              <div class="aim-dial-indicator"><span></span></div>
+              <span class="aim-dial-hint">长按调整</span>
+            </div>
+          </div>
+        </div>
         <div class="param-row">
-          <label>旋转角度</label>
+          <label>镜面方向</label>
           <input type="range" id="mirrorAngle" min="0" max="360" value="45">
           <span class="param-val" id="mirrorAngleVal">45°</span>
         </div>
@@ -493,7 +633,10 @@
   </div>
 
   <div class="sidebar-footer">
-    <button class="export-btn" id="exportBtn">💾 导出 JSON</button>
+    <input type="file" id="importFile" accept=".json,application/json" hidden>
+    <button type="button" class="import-btn" id="importBtn">📂 导入 JSON</button>
+    <button type="button" class="export-btn" id="exportBtn">💾 导出 JSON</button>
+    <p class="import-status" id="importStatus"></p>
   </div>
 </aside>
 
@@ -514,7 +657,10 @@
   </div>
 </main>
 
-<script>
+<script type="module">
+import { AimDial } from '/js/AimDial.js';
+import { normalizeAngle } from '/js/constants.js';
+
 (function () {
   'use strict';
 
@@ -576,6 +722,28 @@
   const ctx = canvas.getContext('2d');
   const canvasWrap = document.getElementById('canvasWrap');
 
+  let mirrorDialAngle = 45;
+  let mirrorAngleDial = null;
+  let mirrorAngleFromDial = false;
+
+  function syncMirrorAngleUI(angle) {
+    const v = Math.round(normalizeAngle(angle));
+    mirrorDialAngle = v;
+    document.getElementById('mirrorAngle').value = v;
+    document.getElementById('mirrorAngleVal').textContent = v + '°';
+    mirrorAngleDial?.updateIndicator(v);
+  }
+
+  function applyMirrorAngle(v) {
+    const rounded = Math.round(normalizeAngle(v));
+    syncMirrorAngleUI(rounded);
+    if (state.selectedCell) {
+      applyParamChange('mirror', 'angle', rounded);
+    } else {
+      DEFAULT_PARAMS.mirror.angle = rounded;
+    }
+  }
+
   // ── Player default positions (relative to grid) ──
   function getDefaultPlayerPos(index, total, gridSize) {
     const margin = Math.max(3, Math.floor(gridSize * 0.08));
@@ -623,6 +791,23 @@
   }
 
   function cellKey(x, y) { return `${x},${y}`; }
+
+  /** 与游戏 mirrorUtils.getMirrorSegment 一致：angle = 镜面线段方向（度） */
+  const MIRROR_HALF = 0.42;
+  function getMirrorSegmentPx(el, cs) {
+    const cx = (el.x + 0.5) * cs;
+    const cy = (el.y + 0.5) * cs;
+    const rad = ((el.angle ?? 45) * Math.PI) / 180;
+    const ux = Math.cos(rad);
+    const uy = Math.sin(rad);
+    const half = MIRROR_HALF * cs;
+    return {
+      x1: cx - ux * half,
+      y1: cy - uy * half,
+      x2: cx + ux * half,
+      y2: cy + uy * half,
+    };
+  }
 
   function isPlayerTowerCell(x, y) {
     return state.players.some(p => p.x === x && p.y === y);
@@ -757,8 +942,8 @@
       document.getElementById('wallHp').value = el.hp;
     } else if (el.type === 'mirror') {
       document.getElementById('paramMirror').style.display = 'block';
-      document.getElementById('mirrorAngle').value = el.angle;
-      document.getElementById('mirrorAngleVal').textContent = el.angle + '°';
+      syncMirrorAngleUI(el.angle);
+      mirrorAngleDial?.reset();
     } else if (el.type === 'lens') {
       document.getElementById('paramLens').style.display = 'block';
       document.getElementById('lensFocal').value = el.focal;
@@ -993,31 +1178,26 @@
         ctx.fillText('■', cx, cy);
         break;
 
-      case 'mirror':
-        ctx.save();
-        ctx.translate(cx, cy);
-        ctx.rotate((el.angle * Math.PI) / 180);
-        ctx.fillStyle = '#c0d8f0';
+      case 'mirror': {
+        const seg = getMirrorSegmentPx(el, cs);
+        ctx.fillStyle = 'rgba(192, 216, 240, 0.15)';
+        ctx.fillRect(x + pad, y + pad, cs - pad * 2, cs - pad * 2);
         ctx.strokeStyle = '#58a6ff';
         ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        const s = cs * 0.32;
-        ctx.moveTo(0, -s);
-        ctx.lineTo(s, 0);
-        ctx.lineTo(0, s);
-        ctx.lineTo(-s, 0);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
-        // Mirror surface line
+        ctx.strokeRect(x + pad, y + pad, cs - pad * 2, cs - pad * 2);
         ctx.strokeStyle = '#fff';
-        ctx.lineWidth = 2;
+        ctx.lineWidth = 2.5;
         ctx.beginPath();
-        ctx.moveTo(-s * 0.7, -s * 0.7);
-        ctx.lineTo(s * 0.7, s * 0.7);
+        ctx.moveTo(seg.x1, seg.y1);
+        ctx.lineTo(seg.x2, seg.y2);
         ctx.stroke();
-        ctx.restore();
+        ctx.fillStyle = '#c0d8f0';
+        ctx.font = `bold ${cs * 0.22}px sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(Math.round(el.angle ?? 45) + '°', cx, cy);
         break;
+      }
 
       case 'lens':
         ctx.strokeStyle = '#67e8f9';
@@ -1329,8 +1509,11 @@
 
   // Param controls
   document.getElementById('mirrorAngle').addEventListener('input', (e) => {
+    if (mirrorAngleFromDial) return;
     const v = parseInt(e.target.value, 10);
+    mirrorDialAngle = v;
     document.getElementById('mirrorAngleVal').textContent = v + '°';
+    mirrorAngleDial?.updateIndicator(v);
     applyParamChange('mirror', 'angle', v);
   });
 
@@ -1394,8 +1577,127 @@
     }
   }, { passive: false });
 
-  // ── Export ──
+  // ── Export / Import ──
   document.getElementById('exportBtn').addEventListener('click', exportJSON);
+
+  document.getElementById('importBtn').addEventListener('click', () => {
+    document.getElementById('importFile').click();
+  });
+
+  document.getElementById('importFile').addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const data = JSON.parse(await file.text());
+      importJSON(data, file.name);
+    } catch (err) {
+      setImportStatus('导入失败：' + (err.message || 'JSON 无效'), true);
+    }
+  });
+
+  function setImportStatus(msg, isError) {
+    const el = document.getElementById('importStatus');
+    el.textContent = msg;
+    el.style.color = isError ? '#f85149' : 'var(--muted)';
+  }
+
+  function syncSettingsUIFromState() {
+    const setRange = (id, valId, v) => {
+      const input = document.getElementById(id);
+      const valEl = document.getElementById(valId);
+      if (input) input.value = String(v);
+      if (valEl) valEl.textContent = String(v);
+    };
+    setRange('gridSize', 'gridSizeVal', state.gridSize);
+    setRange('cellSize', 'cellSizeVal', state.cellSize);
+    setRange('visibility', 'visibilityVal', state.visibility);
+    setRange('playerCount', 'playerCountVal', state.playerCount);
+    document.getElementById('initialEnergy').value = state.initialEnergy;
+    document.getElementById('defaultHpPlayer').value = state.defaultHp.player_tower;
+    document.getElementById('defaultHpAttack').value = state.defaultHp.attack_tower;
+    document.getElementById('defaultHpSolar').value = state.defaultHp.solar;
+    document.getElementById('defaultHpWall').value = state.defaultHp.wall;
+    document.getElementById('defaultBeaconActivation').value = state.defaultBeaconActivation;
+    document.getElementById('winCaptureBeacons').checked = state.winConditions.captureAllBeacons;
+    document.getElementById('winDestroyTower').checked = state.winConditions.destroyEnemyMainTower;
+  }
+
+  function importJSON(data, fileName) {
+    if (!data || typeof data !== 'object') throw new Error('文件格式无效');
+    const settings = data.settings || {};
+    const gs = settings.gridSize ?? data.gridSize;
+    if (!gs || gs < 10) throw new Error('缺少 settings.gridSize');
+
+    state.gridSize = gs;
+    state.cellSize = settings.cellSize ?? data.cellSize ?? 30;
+    state.initialEnergy = settings.initialEnergy ?? 100;
+    state.visibility = settings.visibilityRange ?? settings.visibility ?? 5;
+    state.playerCount = settings.playerCount ?? (data.players?.length || 2);
+    state.defaultHp = {
+      player_tower: settings.defaultHp?.player_tower ?? 100,
+      attack_tower: settings.defaultHp?.attack_tower ?? 80,
+      solar: settings.defaultHp?.solar ?? 50,
+      wall: settings.defaultHp?.wall ?? 100,
+    };
+    state.defaultBeaconActivation = settings.defaultBeaconActivation ?? 10;
+    const wc = settings.winConditions || data.winConditions || {};
+    state.winConditions = {
+      captureAllBeacons: wc.captureAllBeacons !== false,
+      destroyEnemyMainTower: wc.destroyEnemyMainTower !== false,
+    };
+
+    state.cells = {};
+    const elements = data.elements || [];
+    elements.forEach((el) => {
+      if (!el?.type || el.x == null || el.y == null) return;
+      if (el.x < 0 || el.y < 0 || el.x >= gs || el.y >= gs) return;
+      const copy = { ...el };
+      if (copy.type === 'mirror' && copy.angle == null) copy.angle = 45;
+      if (copy.type === 'lens' && copy.focal == null) copy.focal = 5;
+      if (copy.type === 'beacon' && copy.activationThreshold == null) {
+        copy.activationThreshold = state.defaultBeaconActivation;
+      }
+      state.cells[cellKey(copy.x, copy.y)] = copy;
+    });
+
+    (data.beacons || []).forEach((b) => {
+      if (b.x == null || b.y == null) return;
+      const key = cellKey(b.x, b.y);
+      if (state.cells[key]) return;
+      state.cells[key] = {
+        type: 'beacon',
+        x: b.x,
+        y: b.y,
+        activationThreshold: b.activationThreshold ?? state.defaultBeaconActivation,
+      };
+    });
+
+    const importedPlayers = data.players || [];
+    state.players = [];
+    for (let i = 0; i < state.playerCount; i++) {
+      const ip = importedPlayers[i] || importedPlayers[0];
+      const def = getDefaultPlayerPos(i, state.playerCount, state.gridSize);
+      state.players.push({
+        id: ip?.id ?? i + 1,
+        x: ip?.x ?? def.x,
+        y: ip?.y ?? def.y,
+        angle: ip?.angle ?? def.angle,
+        hp: ip?.hp ?? state.defaultHp.player_tower,
+        color: ip?.color || PLAYER_COLORS[i],
+      });
+    }
+
+    clearSelection();
+    syncSettingsUIFromState();
+    rebuildPlayerCells();
+    buildToolbar();
+    selectTool(state.currentTool === 'eraser' ? 'wall' : state.currentTool);
+    resizeCanvas();
+    updateBeaconCount();
+    render();
+    setImportStatus('已导入：' + (fileName || 'map.json'));
+  }
 
   function exportJSON() {
     const elements = Object.values(state.cells).map(el => {
@@ -1479,6 +1781,22 @@
   }
 
   // ── Init ──
+  mirrorAngleDial = new AimDial(document.getElementById('mirrorAngleDial'), {
+    onAngleChange: (a) => {
+      mirrorAngleFromDial = true;
+      applyMirrorAngle(a);
+      mirrorAngleFromDial = false;
+    },
+    getAngle: () => mirrorDialAngle,
+  });
+  syncMirrorAngleUI(DEFAULT_PARAMS.mirror.angle);
+
+  function mirrorDialLoop() {
+    if (mirrorAngleDial?.tickSnap()) render();
+    requestAnimationFrame(mirrorDialLoop);
+  }
+  requestAnimationFrame(mirrorDialLoop);
+
   function init() {
     initPlayers(state.playerCount);
     buildToolbar();

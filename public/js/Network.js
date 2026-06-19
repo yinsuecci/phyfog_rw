@@ -122,6 +122,8 @@ export class Network {
 
     this.socket.on('game:state', (d) => this._emit('game:state', d));
 
+    this.socket.on('game:rotation', (d) => this._emit('game:rotation', d));
+
     this.socket.on('game:return-lobby', () => this._emit('game:return-lobby'));
 
     this.socket.on('game:rejoin', (d) => this._emit('game:rejoin', d));
@@ -257,7 +259,6 @@ export class Network {
 
 
   sendAction(action, { noAck = false } = {}) {
-
     if (!this.socket?.connected || !this.roomJoined) {
       return Promise.resolve({ ok: false, error: '未连接到房间' });
     }
@@ -268,13 +269,12 @@ export class Network {
     }
 
     return new Promise((resolve) => {
-      const timer = setTimeout(() => resolve({ ok: true }), 3000);
+      const timer = setTimeout(() => resolve({ ok: false, error: '操作超时' }), 5000);
       this.socket.emit('game:action', action, (res) => {
         clearTimeout(timer);
-        resolve(res ?? { ok: true });
+        resolve(res ?? { ok: false, error: '无响应' });
       });
     });
-
   }
 
 

@@ -42,9 +42,16 @@ export class GameLogic {
       const copy = { ...el, maxHp: el.hp ?? 100, hp: el.hp ?? 100 };
       if (copy.type === 'mirror' || copy.type === 'lens') {
         copy.invulnerable = true;
+        if (copy.type === 'mirror') {
+          copy.angle = normalizeAngle(copy.angle ?? 45);
+        }
       }
       if (copy.type === 'attack_tower' && copy.owner == null) {
         copy.owner = null;
+      }
+      if (copy.type === 'solar') {
+        if (copy.owner == null) copy.owner = null;
+        copy.playerBuilt = copy.playerBuilt ?? false;
       }
       this.cells[key] = copy;
     });
@@ -157,6 +164,98 @@ export class GameLogic {
     }
   }
 
+  /** 读取当前瞄准角度（主塔或正在控制的进攻塔） */
+  getAimRotation(playerIdx) {
+    const p = this.players[playerIdx];
+    if (!p) return null;
+    if (p.activeTower?.type === 'attack' && p.activeTower.key) {
+      const el = this.cells[p.activeTower.key];
+      return { towerKey: p.activeTower.key, angle: normalizeAngle(el?.angle ?? 0) };
+    }
+    return { towerKey: null, angle: normalizeAngle(p.angle ?? 0) };
+  }
+
+  /** 保存本地玩家整组旋转（快照后恢复，避免被服务器覆盖） */
+  captureRotationSnapshot(playerIdx) {
+    const p = this.players[playerIdx];
+    if (!p) return null;
+    const snap = { mainAngle: normalizeAngle(p.angle ?? 0) };
+    Object.entries(this.cells).forEach(([key, el]) => {
+      if (el.type === 'attack_tower' && el.owner === playerIdx) {
+        if (!snap.attackTowers) snap.attackTowers = {};
+        snap.attackTowers[key] = normalizeAngle(el.angle ?? 0);
+      }
+    });
+    return snap;
+  }
+
+  restoreRotationSnapshot(playerIdx, snap) {
+    if (!snap) return;
+    const p = this.players[playerIdx];
+    if (!p) return;
+    p.angle = snap.mainAngle;
+    if (snap.attackTowers) {
+      Object.entries(snap.attackTowers).forEach(([key, angle]) => {
+        if (this.cells[key]) this.cells[key].angle = angle;
+      });
+    }
+  }
+
+  /** 服务器：应用客户端上报的绝对角度 */
+  syncRotation(playerIdx, { angle, towerKey }) {
+    const p = this.players[playerIdx];
+    if (!p?.alive || this.paused) return { ok: false, error: '无法旋转' };
+    const a = normalizeAngle(angle);
+    if (towerKey) {
+      if (!this._ownsAttackTower(playerIdx, towerKey)) {
+        return { ok: false, error: '无权控制该塔' };
+      }
+      const el = this.cells[towerKey];
+      if (!el) return { ok: false, error: '塔不存在' };
+      el.angle = a;
+    } else {
+      p.angle = a;
+    }
+    return { ok: true };
+  }
+
+  /** 其他玩家旋转广播（不影响本地玩家） */
+  applyRemoteRotation(playerIdx, { angle, towerKey }) {
+    const p = this.players[playerIdx];
+    if (!p) return;
+    const a = normalizeAngle(angle);
+    if (towerKey) {
+      const el = this.cells[towerKey];
+      if (el) el.angle = a;
+    } else {
+      p.angle = a;
+    }
+  }
+
+  /** 主光塔易位：消耗 40J，移动到视野内空格 */
+  relocateMain(playerIdx, x, y) {
+    const p = this.players[playerIdx];
+    if (!p?.alive || this.paused) return { ok: false, error: '无法易位' };
+    if (p.activeTower?.type !== 'main') return { ok: false, error: '请先切换到主光塔' };
+    const cost = 40;
+    if (p.energy < cost) return { ok: false, error: '需要 40J 能量' };
+    if (!this.canSee(playerIdx, x, y)) return { ok: false, error: '目标不在视野内' };
+    const key = cellKey(x, y);
+    if (this.cells[key]) return { ok: false, error: '格子已占用' };
+    if (this.players.some((pl, i) => i !== playerIdx && pl.alive && pl.towerX === x && pl.towerY === y)) {
+      return { ok: false, error: '无法移到其它光塔上' };
+    }
+    p.energy -= cost;
+    p.towerX = x;
+    p.towerY = y;
+    if (p.visionGrid) {
+      p.visionGrid.revealCircle(x, y, this.visibilityRange);
+      p.visionGrid.set(x, y, true);
+      this._ensureOwnTowersVisible(playerIdx, p.visionGrid);
+    }
+    return { ok: true };
+  }
+
   switchTower(playerIdx, towerType, key) {
     const p = this.players[playerIdx];
     if (!p) return;
@@ -200,7 +299,7 @@ export class GameLogic {
     p.capturedTowers.push(key);
   }
 
-  shoot(playerIdx, bandId, bandEnergy, radioPayload) {
+  shoot(playerIdx, bandId, bandEnergy, radioPayload, aimAngle) {
     const p = this.players[playerIdx];
     if (!p?.alive || this.paused) return null;
     if (this.gameTime < (p.fireCooldownUntil ?? 0)) return null;
@@ -214,9 +313,12 @@ export class GameLogic {
     const shootOriginKey = p.activeTower?.type === 'attack' && p.activeTower.key
       ? p.activeTower.key
       : cellKey(p.towerX, p.towerY);
+    const fireAngle = aimAngle != null
+      ? normalizeAngle(aimAngle)
+      : normalizeAngle(pos.angle ?? p.angle);
     const result = this.rayCaster.traceFullPath(
       { x: pos.x, y: pos.y },
-      pos.angle ?? p.angle,
+      fireAngle,
       bandId, cost, playerIdx,
       {
         radioMessage: radioPayload?.message,
@@ -246,6 +348,13 @@ export class GameLogic {
       this._mergeVision(allyIdx, shooterIdx);
       if (message) this.messages.push({ from: shooterIdx, to: allyIdx, text: message, time: this.gameTime });
       if (energy > 0) ally.energy += energy;
+    });
+
+    result.solarClaims?.forEach(({ key, owner }) => {
+      const el = this.cells[key];
+      if (el?.type === 'solar' && el.owner == null) {
+        el.owner = owner;
+      }
     });
 
     result.hits?.forEach(hit => {
@@ -316,7 +425,7 @@ export class GameLogic {
     this._ensureOwnTowersVisible(bIdx, b.visionGrid);
   }
 
-  build(playerIdx, type, x, y, energyInput, mirrorAngle) {
+  build(playerIdx, type, x, y, energyInput, mirrorAngle, lensFocal) {
     const p = this.players[playerIdx];
     if (!p?.alive || this.paused) return { ok: false, error: '无法建设' };
     if (!this.canSee(playerIdx, x, y)) return { ok: false, error: '不在视野内' };
@@ -338,7 +447,11 @@ export class GameLogic {
       el.angle = mirrorAngle ?? 45;
       el.invulnerable = true;
     }
-    if (type === 'lens') { el.focal = 5; el.invulnerable = true; }
+    if (type === 'lens') {
+      const f = Number(lensFocal);
+      el.focal = Number.isFinite(f) ? Math.max(2, Math.min(10, Math.round(f))) : 5;
+      el.invulnerable = true;
+    }
     if (type === 'solar') { el.energyPer10s = 2; el.conversionRate = 0.6; el.hp = 3; el.maxHp = 3; }
     if (type === 'attack_tower') {
       el.angle = 0;
@@ -420,38 +533,105 @@ export class GameLogic {
     };
   }
 
-  applyState(state) {
+  /**
+   * 轻量时钟同步（~30Hz）：不重建视野网格
+   * @returns {boolean}
+   */
+  applyClock(state) {
+    if (!state) return false;
+    if (state.gameTime != null) {
+      const drift = this.gameTime - state.gameTime;
+      if (drift > 0.35) {
+        this.gameTime = state.gameTime;
+      } else {
+        this.gameTime = Math.max(this.gameTime, state.gameTime);
+      }
+    }
+    this.paused = !!state.paused;
+    this.winner = state.winner ?? null;
+    return true;
+  }
+
+  /** 客户端本地剔除过期光束（clock 包不再携带 rays，避免 30Hz 重传路径） */
+  pruneExpiredRays(now = Date.now()) {
+    if (!this.activeRays?.length) return;
+    this.activeRays = this.activeRays.filter((r) => r.expireAt > now);
+  }
+
+  /**
+   * 完整快照（客户端专用）。gameTime 不允许回退。
+   * @returns {boolean}
+   */
+  applyState(state, opts = {}) {
+    if (!state) return false;
+    const preserveIdx = opts.preserveRotationFor;
+    const rotSnap = preserveIdx != null ? this.captureRotationSnapshot(preserveIdx) : null;
+
     this.cells = state.cells;
     this.beacons = state.beacons;
-    this.gameTime = state.gameTime;
-    this.paused = state.paused;
+    if (state.gameTime != null) {
+      this.gameTime = Math.max(this.gameTime, state.gameTime);
+    }
+    this.paused = !!state.paused;
     this.activeRays = state.activeRays || [];
-    this.winner = state.winner;
+    this.winner = state.winner ?? null;
     this.messages = state.messages || [];
 
-    this.players = state.players.map(p => ({
-      ...p,
-      visionGrid: VisionGrid.fromArray(this.gridSize, p.visionGrid),
-      sharedVisionFrom: new Set(p.sharedVisionFrom || []),
-      capturedTowers: [...(p.capturedTowers || [])],
-    }));
+    this.players = state.players.map((p, i) => {
+      const prev = this.players[i];
+      let visionGrid;
+      if (p.visionGrid?.length) {
+        visionGrid = VisionGrid.fromArray(this.gridSize, p.visionGrid);
+      }
+      if (!visionGrid || visionGrid.visibleCount() === 0) {
+        if (prev?.visionGrid?.visibleCount() > 0) {
+          visionGrid = prev.visionGrid;
+        } else {
+          visionGrid = new VisionGrid(this.gridSize);
+          visionGrid.revealCircle(p.towerX, p.towerY, this.visibilityRange);
+          visionGrid.set(p.towerX, p.towerY, true);
+        }
+      }
+      return {
+        ...p,
+        visionGrid,
+        sharedVisionFrom: new Set(p.sharedVisionFrom || []),
+        capturedTowers: [...(p.capturedTowers || [])],
+      };
+    });
+    if (rotSnap != null) {
+      this.restoreRotationSnapshot(preserveIdx, rotSnap);
+    }
     this.rayCaster.invalidateMirrors();
+    return true;
   }
 
   handleAction(fromPlayerIndex, action) {
     switch (action.type) {
+      case 'rotateSync':
+        return this.syncRotation(fromPlayerIndex, action);
       case 'rotate':
+        if (action.angle != null) {
+          return this.syncRotation(fromPlayerIndex, action);
+        }
         this.rotate(fromPlayerIndex, action.delta);
         return { ok: true };
       case 'shoot': {
-        const ray = this.shoot(fromPlayerIndex, action.bandId, action.bandEnergy, action.radioPayload);
+        const ray = this.shoot(
+          fromPlayerIndex, action.bandId, action.bandEnergy, action.radioPayload, action.aimAngle
+        );
         return ray ? { ok: true } : { ok: false, error: '无法发射（冷却/能量/暂停）' };
       }
       case 'build':
-        return this.build(fromPlayerIndex, action.buildType, action.x, action.y, action.energyInput, action.mirrorAngle);
+        return this.build(
+          fromPlayerIndex, action.buildType, action.x, action.y,
+          action.energyInput, action.mirrorAngle, action.lensFocal
+        );
       case 'switchTower':
         this.switchTower(fromPlayerIndex, action.towerType, action.key);
         return { ok: true };
+      case 'relocateMain':
+        return this.relocateMain(fromPlayerIndex, action.x, action.y);
       default:
         return { ok: false, error: '未知操作' };
     }

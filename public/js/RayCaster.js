@@ -6,7 +6,7 @@ import { segmentMirrorHit, reflectAtMirror } from './mirrorUtils.js';
 
 const MAX_STEPS = 2000;
 const STEP = 0.05;
-const FOCUS_TOL = 0.42;
+const FOCUS_TOL = 0.55;
 
 export class RayCaster {
   constructor(ctx) {
@@ -45,13 +45,17 @@ export class RayCaster {
     const allyContacts = [];
     const beaconUpdates = [];
     const passedLenses = [];
+    const solarClaims = [];
     const usedMirrors = new Set();
     const shootOriginKey = options.shootOriginKey ?? null;
     let messages = options.radioMessage;
     let radioEnergy = options.radioEnergy || 0;
 
     const pushPoint = (px, py) => {
-      const crit = this._isCritAt(px, py, passedLenses);
+      const gx = Math.floor(px);
+      const gy = Math.floor(py);
+      const crit = this._isCritAt(px, py, passedLenses)
+        || this._isCritAtCell(gx, gy, passedLenses);
       const last = path[path.length - 1];
       if (!last || Math.hypot(last.x - px, last.y - py) > 0.012) {
         path.push({ x: px, y: py, crit });
@@ -98,7 +102,7 @@ export class RayCaster {
         lastGx = gx;
         lastGy = gy;
         const stop = this._processCell(gx, gy, x, y, band, bandId, energy, shooterIdx, shootOriginKey, {
-          hits, visionReveals, allyContacts, beaconUpdates, passedLenses,
+          hits, visionReveals, allyContacts, beaconUpdates, passedLenses, solarClaims,
         }, (contact) => {
           allyContacts.push(contact);
           messages = null;
@@ -109,7 +113,7 @@ export class RayCaster {
     }
 
     return {
-      path, hits, mirrorHits, visionReveals, allyContacts, beaconUpdates,
+      path, hits, mirrorHits, visionReveals, allyContacts, beaconUpdates, solarClaims,
       bandId, energy, passedLenses,
     };
   }
@@ -156,7 +160,7 @@ export class RayCaster {
         return true;
       }
       if (band.damagesHp) {
-        const crit = this._isCritAt(x, y, bags.passedLenses);
+        const crit = this._isCritAtCell(gx, gy, bags.passedLenses);
         bags.hits.push({ key, type: 'player_tower', playerIdx, damage: crit ? energy * 2 : energy, crit });
         return true;
       }
@@ -182,7 +186,8 @@ export class RayCaster {
       return false;
     }
     if (el.type === 'wall') {
-      bags.hits.push({ key, type: 'wall', damage: energy });
+      const crit = this._isCritAtCell(gx, gy, bags.passedLenses);
+      bags.hits.push({ key, type: 'wall', damage: crit ? energy * 2 : energy, crit });
       return true;
     }
     if (el.type === 'attack_tower') {
@@ -192,19 +197,22 @@ export class RayCaster {
         return true;
       }
       if (band.damagesHp && bandId !== 'gamma') {
-        const crit = this._isCritAt(x, y, bags.passedLenses);
+        const crit = this._isCritAtCell(gx, gy, bags.passedLenses);
         bags.hits.push({ key, type: el.type, damage: crit ? energy * 2 : energy, crit });
         return true;
       }
       return false;
     }
     if (el.type === 'solar') {
+      if (el.owner == null && !bags.solarClaims.some((c) => c.key === key)) {
+        bags.solarClaims.push({ key, owner: shooterIdx });
+      }
       if (el.playerBuilt && energy < 3 && bandId !== 'gamma') {
         bags.hits.push({ key, type: 'solar', convert: true, noDamage: true });
         return true;
       }
       if (band.damagesHp && bandId !== 'gamma') {
-        const crit = this._isCritAt(x, y, bags.passedLenses);
+        const crit = this._isCritAtCell(gx, gy, bags.passedLenses);
         bags.hits.push({ key, type: 'solar', damage: crit ? energy * 2 : energy, crit });
         return true;
       }
@@ -215,11 +223,16 @@ export class RayCaster {
       return false;
     }
     if (band.damagesHp) {
-      const crit = this._isCritAt(x, y, bags.passedLenses);
+      const crit = this._isCritAtCell(gx, gy, bags.passedLenses);
       bags.hits.push({ key, type: el.type, damage: crit ? energy * 2 : energy, crit });
       return true;
     }
     return false;
+  }
+
+  /** 以格子中心判定是否在透镜聚焦圈上（与编辑器聚焦圈一致） */
+  _isCritAtCell(gx, gy, passedLenses) {
+    return this._isCritAt(gx + 0.5, gy + 0.5, passedLenses);
   }
 
   _isCritAt(px, py, passedLenses) {
