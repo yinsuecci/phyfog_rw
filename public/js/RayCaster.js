@@ -1,7 +1,7 @@
 /**
  * RayCaster.js — 光线投射（镜面边线段相交反射、透镜暴击圈）
  */
-import { BANDS, cellKey, degToRad, normalizeAngle } from './constants.js';
+import { BANDS, cellKey, degToRad, normalizeAngle, roundStat } from './constants.js';
 import { segmentMirrorHit, reflectAtMirror } from './mirrorUtils.js';
 
 const MAX_STEPS = 2000;
@@ -70,7 +70,7 @@ export class RayCaster {
       const ny = y + dy * STEP;
 
       if (bandId !== 'gamma') {
-        const mirrorHit = this._findMirrorHit(x, y, nx, ny, usedMirrors);
+        const mirrorHit = this._findMirrorHit(x, y, nx, ny, usedMirrors, bandId);
         if (mirrorHit) {
           pushPoint(mirrorHit.px, mirrorHit.py);
           mirrorHits.push({
@@ -118,9 +118,10 @@ export class RayCaster {
     };
   }
 
-  _findMirrorHit(x0, y0, x1, y1, usedMirrors) {
+  _findMirrorHit(x0, y0, x1, y1, usedMirrors, bandId) {
     let best = null;
     for (const el of this._getMirrors()) {
+      if (bandId === 'ultraviolet' && !el.uvGrade) continue;
       const key = `${el.x},${el.y}`;
       if (usedMirrors.has(key)) continue;
       const hit = segmentMirrorHit(x0, y0, x1, y1, el);
@@ -149,19 +150,22 @@ export class RayCaster {
     const el = this.ctx.cells[key];
 
     if (el?.type === 'lens' && bandId !== 'gamma') {
+      if (bandId === 'ultraviolet' && !el.uvGrade) return true;
       if (!bags.passedLenses.some((l) => l.x === gx && l.y === gy)) {
         bags.passedLenses.push({ x: gx, y: gy, focal: el.focal ?? 5 });
       }
     }
 
+    const rayDamage = (crit) => this._rayDamage(band, bandId, energy, crit);
+
     if (playerIdx >= 0 && playerIdx !== shooterIdx && bandId !== 'radio') {
       if (band.gammaRule) {
         bags.hits.push({ key, type: 'player_tower', playerIdx, gamma: true, ...this._gammaDamage(this.ctx.players[playerIdx]) });
-        return true;
+        return false;
       }
       if (band.damagesHp) {
         const crit = this._isCritAtCell(gx, gy, bags.passedLenses);
-        bags.hits.push({ key, type: 'player_tower', playerIdx, damage: crit ? energy * 2 : energy, crit });
+        bags.hits.push({ key, type: 'player_tower', playerIdx, damage: rayDamage(crit), crit });
         return true;
       }
     }
@@ -173,11 +177,13 @@ export class RayCaster {
     }
 
     if (el.type === 'lead') {
+      if (band.gammaRule) return false;
       bags.hits.push({ key, type: 'lead', blocked: true });
       return true;
     }
 
     if (el.type === 'mirror' || el.type === 'lens') {
+      if (bandId === 'ultraviolet' && !el.uvGrade) return true;
       return false;
     }
 
@@ -187,7 +193,7 @@ export class RayCaster {
     }
     if (el.type === 'wall') {
       const crit = this._isCritAtCell(gx, gy, bags.passedLenses);
-      bags.hits.push({ key, type: 'wall', damage: crit ? energy * 2 : energy, crit });
+      bags.hits.push({ key, type: 'wall', damage: rayDamage(crit), crit });
       return true;
     }
     if (el.type === 'attack_tower') {
@@ -198,7 +204,7 @@ export class RayCaster {
       }
       if (band.damagesHp && bandId !== 'gamma') {
         const crit = this._isCritAtCell(gx, gy, bags.passedLenses);
-        bags.hits.push({ key, type: el.type, damage: crit ? energy * 2 : energy, crit });
+        bags.hits.push({ key, type: el.type, damage: rayDamage(crit), crit });
         return true;
       }
       return false;
@@ -213,7 +219,7 @@ export class RayCaster {
       }
       if (band.damagesHp && bandId !== 'gamma') {
         const crit = this._isCritAtCell(gx, gy, bags.passedLenses);
-        bags.hits.push({ key, type: 'solar', damage: crit ? energy * 2 : energy, crit });
+        bags.hits.push({ key, type: 'solar', damage: rayDamage(crit), crit });
         return true;
       }
       return false;
@@ -224,10 +230,15 @@ export class RayCaster {
     }
     if (band.damagesHp) {
       const crit = this._isCritAtCell(gx, gy, bags.passedLenses);
-      bags.hits.push({ key, type: el.type, damage: crit ? energy * 2 : energy, crit });
+      bags.hits.push({ key, type: el.type, damage: rayDamage(crit), crit });
       return true;
     }
     return false;
+  }
+
+  _rayDamage(band, bandId, energy, crit) {
+    const base = band.fixedDamage != null ? band.fixedDamage : energy;
+    return crit ? roundStat(base * 2) : roundStat(base);
   }
 
   /** 以格子中心判定是否在透镜聚焦圈上（与编辑器聚焦圈一致） */
@@ -246,7 +257,7 @@ export class RayCaster {
   _gammaDamage(el) {
     const hp = el.hp ?? 100;
     const maxHp = el.maxHp ?? hp;
-    if (hp <= maxHp / 2) return { execute: true, damage: hp };
-    return { execute: false, damage: Math.ceil(maxHp / 2) };
+    if (hp <= maxHp / 2) return { execute: true, damage: roundStat(hp) };
+    return { execute: false, damage: roundStat(maxHp / 2) };
   }
 }

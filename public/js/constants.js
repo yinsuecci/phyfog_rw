@@ -48,7 +48,8 @@ export const BANDS = {
   ultraviolet: {
     id: 'ultraviolet',
     label: '紫外光',
-    cost: 15,
+    cost: 20,
+    fixedDamage: 30,
     width: 4,
     rayDuration: 380,
     colorLeft: '#3b82f6',
@@ -77,6 +78,9 @@ export const BANDS = {
 
 /** 免疫一切伤害的元素类型 */
 export const INVULNERABLE_TYPES = new Set(['mirror', 'lens']);
+
+/** 平面镜/透镜紫外线镀膜升级消耗 */
+export const OPTICS_UV_UPGRADE_COST = 10;
 
 export const BUILD_COSTS = {
   wall: { label: '墙壁', baseCost: 0, hpFromEnergy: true },
@@ -142,4 +146,16 @@ export function radToDeg(r) {
 
 export function normalizeAngle(deg) {
   return ((deg % 360) + 360) % 360;
+}
+
+/** HP / 能量：保留一位小数 */
+export function roundStat(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.round(n * 10) / 10;
+}
+
+/** 格式化为一位小数字符串 */
+export function formatStat(value) {
+  return roundStat(value).toFixed(1);
 }

@@ -35,8 +35,46 @@ function getRoomList(room) {
     ready: p.ready,
     isHost: p.playerIndex === room.hostPlayerIndex,
     playerIndex: p.playerIndex,
+    teamId: p.teamId,
     disconnected: !!p.disconnected,
   }));
+}
+
+function getSlotTeamId(room, index) {
+  const slots = room.mapData?.players || [];
+  const slot = slots[index];
+  if (slot?.teamId != null) return Number(slot.teamId);
+  const teams = room.mapData?.settings?.teams || [];
+  if (teams.length) return Number(teams[index % teams.length].id);
+  return (index % 2) + 1;
+}
+
+function findTeamSlot(room, teamId) {
+  const maxPlayers = room.mapData?.settings?.playerCount || 8;
+  const taken = new Set(
+    room.players.filter((p) => !p.disconnected).map((p) => p.playerIndex)
+  );
+  for (let i = 0; i < maxPlayers; i++) {
+    if (taken.has(i)) continue;
+    if (Number(getSlotTeamId(room, i)) === Number(teamId)) return i;
+  }
+  return -1;
+}
+
+function getRoomSlotInfo(room) {
+  const maxPlayers = room.mapData?.settings?.playerCount || 8;
+  const taken = new Set(
+    room.players.filter((p) => !p.disconnected).map((p) => p.playerIndex)
+  );
+  const slots = [];
+  for (let i = 0; i < maxPlayers; i++) {
+    slots.push({
+      index: i,
+      teamId: getSlotTeamId(room, i),
+      taken: taken.has(i),
+    });
+  }
+  return slots;
 }
 
 function broadcastLobby(roomCode) {
@@ -47,6 +85,7 @@ function broadcastLobby(roomCode) {
     players: getRoomList(room),
     mapName: room.mapData?.meta?.name || '自定义地图',
     playerCount: room.mapData?.settings?.playerCount || room.players.length,
+    teams: room.mapData?.settings?.teams || [],
     gameStarted: room.gameStarted,
   });
 }
@@ -119,14 +158,22 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.get('/map-editor.html', (_req, res) => {
   res.sendFile(path.join(__dirname, 'map-editor.html'));
 });
-app.get('/NGROK.md', (_req, res) => {
-  res.sendFile(path.join(__dirname, 'NGROK.md'));
-});
 
 io.on('connection', (socket) => {
   let currentRoom = null;
 
-  socket.on('room:create', ({ nickname, mapData }, ack) => {
+  socket.on('room:info', ({ roomCode }, ack) => {
+    const room = rooms.get(String(roomCode || '').trim());
+    if (!room) return ack?.({ ok: false, error: '房间不存在' });
+    ack?.({
+      ok: true,
+      teams: room.mapData?.settings?.teams || [],
+      slots: getRoomSlotInfo(room),
+      mapName: room.mapData?.meta?.name || '自定义地图',
+    });
+  });
+
+  socket.on('room:create', ({ nickname, mapData, teamId }, ack) => {
     if (!nickname?.trim() || !mapData) {
       return ack?.({ ok: false, error: '需要昵称和地图数据' });
     }
@@ -136,50 +183,66 @@ io.on('connection', (socket) => {
       code: roomCode,
       hostPlayerIndex: 0,
       mapData,
-      players: [{
-        id: socket.id,
-        nickname: nickname.trim().slice(0, 16),
-        ready: false,
-        playerIndex: 0,
-        disconnected: false,
-      }],
+      players: [],
       gameStarted: false,
       paused: false,
       lastGameState: null,
       gameLogic: null,
     };
 
+    const pickTeam = teamId ?? mapData?.settings?.teams?.[0]?.id ?? 1;
+    const slot = findTeamSlot(room, pickTeam);
+    if (slot < 0) {
+      return ack?.({ ok: false, error: '所选队伍没有空位' });
+    }
+    room.hostPlayerIndex = slot;
+    room.players.push({
+      id: socket.id,
+      nickname: nickname.trim().slice(0, 16),
+      ready: false,
+      playerIndex: slot,
+      teamId: getSlotTeamId(room, slot),
+      disconnected: false,
+    });
+
     rooms.set(roomCode, room);
     currentRoom = roomCode;
     socket.join(roomCode);
-    ack?.({ ok: true, roomCode, isHost: true, playerIndex: 0 });
+    ack?.({ ok: true, roomCode, isHost: true, playerIndex: slot, teamId: getSlotTeamId(room, slot) });
     broadcastLobby(roomCode);
   });
 
-  socket.on('room:join', ({ roomCode, nickname }, ack) => {
+  socket.on('room:join', ({ roomCode, nickname, teamId }, ack) => {
     const room = rooms.get(roomCode);
     if (!room) return ack?.({ ok: false, error: '房间不存在' });
     if (room.gameStarted) {
       return ack?.({ ok: false, error: '游戏进行中，请刷新页面自动重连' });
     }
 
-    const maxPlayers = room.mapData?.settings?.playerCount || 8;
-    if (room.players.filter((p) => !p.disconnected).length >= maxPlayers) {
-      return ack?.({ ok: false, error: '房间已满' });
+    const pickTeam = teamId ?? room.mapData?.settings?.teams?.[0]?.id ?? 1;
+    const slot = findTeamSlot(room, pickTeam);
+    if (slot < 0) {
+      return ack?.({ ok: false, error: '所选队伍已满或无对应出生点' });
     }
 
-    const playerIndex = room.players.length;
     room.players.push({
       id: socket.id,
       nickname: nickname.trim().slice(0, 16),
       ready: false,
-      playerIndex,
+      playerIndex: slot,
+      teamId: getSlotTeamId(room, slot),
       disconnected: false,
     });
 
     currentRoom = roomCode;
     socket.join(roomCode);
-    ack?.({ ok: true, roomCode, isHost: false, playerIndex });
+    ack?.({
+      ok: true,
+      roomCode,
+      isHost: slot === room.hostPlayerIndex,
+      playerIndex: slot,
+      teamId: getSlotTeamId(room, slot),
+    });
     broadcastLobby(roomCode);
   });
 

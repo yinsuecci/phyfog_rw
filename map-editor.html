@@ -112,6 +112,39 @@
       border-color: var(--accent);
     }
 
+    .teams-editor {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin: 6px 0 4px;
+    }
+
+    .team-edit-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .team-color-input {
+      width: 32px;
+      height: 28px;
+      padding: 0;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--panel);
+      cursor: pointer;
+    }
+
+    .team-name-input {
+      flex: 1;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      padding: 4px 8px;
+      font-size: 12px;
+    }
+
     .field-check {
       display: flex;
       align-items: center;
@@ -511,6 +544,11 @@
       <label>游玩人数 <span class="val" id="playerCountVal">2</span></label>
       <input type="range" id="playerCount" min="2" max="8" value="2">
     </div>
+    <div class="field">
+      <label>队伍数量 <span class="val" id="teamCountVal">2</span></label>
+      <input type="range" id="teamCount" min="2" max="6" value="2">
+    </div>
+    <div id="teamsEditor" class="teams-editor"></div>
     <div class="section-title" style="margin-top:12px">默认生命值</div>
     <div class="field">
       <label>主光塔 HP</label>
@@ -614,6 +652,10 @@
       </div>
       <div id="paramPlayer" style="display:none">
         <div class="param-row">
+          <label>所属队伍</label>
+          <select id="playerTeam" style="flex:1;background:var(--panel);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:4px 8px;font-size:12px"></select>
+        </div>
+        <div class="param-row">
           <label>生命值</label>
           <input type="number" id="playerHp" min="1" max="9999" value="100" style="flex:1;background:var(--panel);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:4px 8px;font-size:12px">
         </div>
@@ -657,12 +699,277 @@
   </div>
 </main>
 
-<script type="module">
-import { AimDial } from '/js/AimDial.js';
-import { normalizeAngle } from '/js/constants.js';
-
+<script>
 (function () {
   'use strict';
+
+  function normalizeAngle(deg) {
+    return ((deg % 360) + 360) % 360;
+  }
+
+  const AIM_SNAP_DIRS = [0, 45, 90, 135, 180, 225, 270, 315];
+
+  function shortestAngleDiff(from, to) {
+    let d = normalizeAngle(to) - normalizeAngle(from);
+    while (d > 180) d -= 360;
+    while (d < -180) d += 360;
+    return d;
+  }
+
+  function lerpAngle(from, to, maxStep) {
+    const diff = shortestAngleDiff(from, to);
+    if (Math.abs(diff) <= maxStep) return normalizeAngle(to);
+    return normalizeAngle(from + Math.sign(diff) * maxStep);
+  }
+
+  class AngleDial {
+    constructor(rootEl, { onAngleChange, getAngle }) {
+      this.root = rootEl;
+      this.ring = rootEl?.querySelector('.aim-dial-ring');
+      this.indicator = rootEl?.querySelector('.aim-dial-indicator');
+      this.arrowsBox = rootEl?.querySelector('.aim-dial-arrows');
+      this.onAngleChange = onAngleChange;
+      this.getAngle = getAngle;
+      this.snapTarget = null;
+      this.activeSnap = null;
+      this._dragging = false;
+      this._pointerId = null;
+      this._longPressTimer = null;
+      this._lastUpload = 0;
+      if (this.root) this._buildArrows();
+      this._bind();
+    }
+
+    _buildArrows() {
+      if (!this.arrowsBox) return;
+      this.arrowsBox.innerHTML = '';
+      AIM_SNAP_DIRS.forEach((deg) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'aim-snap-btn';
+        btn.dataset.deg = String(deg);
+        btn.style.setProperty('--pos', `${deg + 90}deg`);
+        btn.setAttribute('aria-label', `${deg}°`);
+        btn.innerHTML = '<span>▲</span>';
+        btn.addEventListener('pointerdown', (e) => e.stopPropagation());
+        btn.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          this.snapTarget = deg;
+          this.activeSnap = deg;
+          this._updateSnapHighlight();
+        });
+        this.arrowsBox.appendChild(btn);
+      });
+    }
+
+    _bind() {
+      if (!this.ring) return;
+      this.ring.addEventListener('pointerdown', (e) => this._onDown(e));
+      this.ring.addEventListener('pointermove', (e) => this._onMove(e));
+      this.ring.addEventListener('pointerup', (e) => this._onUp(e));
+      this.ring.addEventListener('pointercancel', (e) => this._onUp(e));
+      this.ring.addEventListener('contextmenu', (e) => e.preventDefault());
+    }
+
+    _onDown(e) {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      e.preventDefault();
+      this._pointerId = e.pointerId;
+      try { this.ring.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+      clearTimeout(this._longPressTimer);
+      this._longPressTimer = setTimeout(() => {
+        this._dragging = true;
+        this.snapTarget = null;
+        this.root?.classList.add('is-aiming');
+        this._applyPointerAngle(e);
+      }, 280);
+    }
+
+    _onMove(e) {
+      if (e.pointerId !== this._pointerId || !this._dragging) return;
+      e.preventDefault();
+      this._applyPointerAngle(e);
+    }
+
+    _onUp(e) {
+      if (e.pointerId !== this._pointerId) return;
+      clearTimeout(this._longPressTimer);
+      this._pointerId = null;
+      this._dragging = false;
+      this.root?.classList.remove('is-aiming');
+      try { this.ring.releasePointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+    }
+
+    _applyPointerAngle(e) {
+      const angle = this._pointerToAngle(e);
+      this._emitAngle(angle, true);
+      this.updateIndicator(angle);
+    }
+
+    _pointerToAngle(e) {
+      const rect = this.ring.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      return normalizeAngle(Math.atan2(e.clientY - cy, e.clientX - cx) * (180 / Math.PI));
+    }
+
+    _emitAngle(angle, force) {
+      const now = Date.now();
+      if (!force && now - this._lastUpload < 40) return;
+      this._lastUpload = now;
+      this.onAngleChange?.(normalizeAngle(angle));
+    }
+
+    updateIndicator(angle) {
+      if (!this.indicator) return;
+      this.indicator.style.transform = `rotate(${normalizeAngle(angle)}deg)`;
+    }
+
+    tickSnap() {
+      if (this.snapTarget == null) return false;
+      const cur = this.getAngle?.() ?? 0;
+      const next = lerpAngle(cur, this.snapTarget, 14);
+      this._emitAngle(next, Math.abs(shortestAngleDiff(next, this.snapTarget)) < 1);
+      this.updateIndicator(next);
+      if (Math.abs(shortestAngleDiff(next, this.snapTarget)) < 0.6) {
+        this._emitAngle(this.snapTarget, true);
+        this.updateIndicator(this.snapTarget);
+        this.snapTarget = null;
+      }
+      return true;
+    }
+
+    _updateSnapHighlight() {
+      this.arrowsBox?.querySelectorAll('.aim-snap-btn').forEach((btn) => {
+        btn.classList.toggle('active', Number(btn.dataset.deg) === this.activeSnap);
+      });
+    }
+
+    reset() {
+      this.snapTarget = null;
+      this.activeSnap = null;
+      this._updateSnapHighlight();
+    }
+  }
+
+  /** 与 public/js/mapFormat.js 逻辑一致 */
+  const TEAM_PALETTE = ['#3b82f6', '#ef4444', '#22c55e', '#f59e0b', '#a855f7', '#ec4899'];
+
+  function defaultTeams(count) {
+    const n = Math.max(2, Math.min(6, count));
+    return Array.from({ length: n }, (_, i) => ({
+      id: i + 1,
+      name: `队伍${i + 1}`,
+      color: TEAM_PALETTE[i % TEAM_PALETTE.length],
+    }));
+  }
+
+  function normalizeMapData(raw) {
+    if (!raw || typeof raw !== 'object') throw new Error('文件格式无效');
+    const data = Array.isArray(raw) ? { elements: raw } : raw;
+    const settings = { ...(data.settings || {}) };
+    const gridSize = Number(settings.gridSize ?? data.gridSize ?? 100);
+    if (!Number.isFinite(gridSize) || gridSize < 10 || gridSize > 500) {
+      throw new Error('无效的 gridSize（需 10–500）');
+    }
+    const cellSize = Number(settings.cellSize ?? data.cellSize ?? 30);
+    const playerCount = Math.max(
+      1,
+      Math.min(8, Number(settings.playerCount ?? data.playerCount ?? data.players?.length ?? 2))
+    );
+    const defaultHp = {
+      player_tower: Number(settings.defaultHp?.player_tower ?? data.defaultHp?.player_tower ?? 100),
+      attack_tower: Number(settings.defaultHp?.attack_tower ?? data.defaultHp?.attack_tower ?? 80),
+      solar: Number(settings.defaultHp?.solar ?? data.defaultHp?.solar ?? 50),
+      wall: Number(settings.defaultHp?.wall ?? data.defaultHp?.wall ?? 100),
+    };
+    const defaultBeaconActivation = Number(
+      settings.defaultBeaconActivation ?? data.defaultBeaconActivation ?? 10
+    );
+    const wc = settings.winConditions || data.winConditions || {};
+    const winConditions = {
+      captureAllBeacons: wc.captureAllBeacons !== false,
+      destroyEnemyMainTower: wc.destroyEnemyMainTower !== false,
+    };
+    const elements = [];
+    const seen = new Set();
+    const pushElement = (el) => {
+      if (!el?.type || el.x == null || el.y == null) return;
+      const x = Number(el.x);
+      const y = Number(el.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      if (x < 0 || y < 0 || x >= gridSize || y >= gridSize) return;
+      const key = `${x},${y}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      const copy = { ...el, type: el.type, x, y };
+      if (copy.type === 'mirror') copy.angle = Number(copy.angle ?? 45);
+      if (copy.type === 'lens') copy.focal = Number(copy.focal ?? 5);
+      if (copy.type === 'beacon' && copy.activationThreshold == null) {
+        copy.activationThreshold = defaultBeaconActivation;
+      }
+      elements.push(copy);
+    };
+    (data.elements || []).forEach(pushElement);
+    (data.beacons || []).forEach((b) => {
+      pushElement({
+        type: 'beacon',
+        x: b.x,
+        y: b.y,
+        activationThreshold: b.activationThreshold ?? defaultBeaconActivation,
+      });
+    });
+    const teamCount = Math.max(
+      2,
+      Math.min(6, Number(settings.teamCount ?? settings.teams?.length ?? 2))
+    );
+    let teams = Array.isArray(settings.teams) && settings.teams.length
+      ? settings.teams.map((t, i) => ({
+        id: Number(t.id ?? i + 1),
+        name: String(t.name || `队伍${i + 1}`).slice(0, 16),
+        color: t.color || TEAM_PALETTE[i % TEAM_PALETTE.length],
+      }))
+      : defaultTeams(teamCount);
+    teams = teams.slice(0, 6).map((t, i) => ({
+      id: t.id ?? i + 1,
+      name: t.name || `队伍${i + 1}`,
+      color: t.color || TEAM_PALETTE[i % TEAM_PALETTE.length],
+    }));
+    const importedPlayers = Array.isArray(data.players) ? data.players : [];
+    const normalizedPlayers = [];
+    for (let i = 0; i < playerCount; i++) {
+      const ip = importedPlayers[i] || {};
+      const teamId = Number(ip.teamId ?? ip.team ?? teams[i % teams.length].id);
+      const team = teams.find((t) => t.id === teamId);
+      normalizedPlayers.push({
+        id: ip.id ?? i + 1,
+        teamId,
+        x: ip.x,
+        y: ip.y,
+        angle: ip.angle,
+        hp: ip.hp,
+        color: ip.color || team?.color || TEAM_PALETTE[i % TEAM_PALETTE.length],
+      });
+    }
+    return {
+      settings: {
+        gridSize,
+        cellSize,
+        initialEnergy: Number(settings.initialEnergy ?? data.initialEnergy ?? 100),
+        visibilityRange: Number(settings.visibilityRange ?? settings.visibility ?? data.visibility ?? 5),
+        playerCount,
+        teamCount: teams.length,
+        teams,
+        defaultHp,
+        defaultBeaconActivation,
+        winConditions,
+      },
+      winConditions,
+      elements,
+      players: normalizedPlayers,
+    };
+  }
 
   // ── Constants ──
   const PLAYER_COLORS = [
@@ -697,6 +1004,8 @@ import { normalizeAngle } from '/js/constants.js';
     initialEnergy: 100,
     visibility: 5,
     playerCount: 2,
+    teamCount: 2,
+    teams: defaultTeams(2),
     zoom: 1,
     currentTool: 'wall',
     cells: {},
@@ -760,6 +1069,64 @@ import { normalizeAngle } from '/js/constants.js';
     return positions[index] || positions[0];
   }
 
+  function getTeamColor(teamId) {
+    return state.teams.find((t) => t.id === teamId)?.color || '#888';
+  }
+
+  function refreshPlayerTeamSelect() {
+    const sel = document.getElementById('playerTeam');
+    if (!sel) return;
+    sel.innerHTML = state.teams.map((t) =>
+      `<option value="${t.id}">${t.name}</option>`
+    ).join('');
+  }
+
+  function renderTeamsEditor() {
+    const box = document.getElementById('teamsEditor');
+    if (!box) return;
+    box.innerHTML = state.teams.map((t) => `
+      <div class="team-edit-row" data-team-id="${t.id}">
+        <input type="color" class="team-color-input" value="${t.color}" title="队伍颜色">
+        <input type="text" class="team-name-input" value="${t.name}" maxlength="12">
+      </div>
+    `).join('');
+    box.querySelectorAll('.team-edit-row').forEach((row) => {
+      const id = Number(row.dataset.teamId);
+      const team = state.teams.find((t) => t.id === id);
+      if (!team) return;
+      row.querySelector('.team-color-input')?.addEventListener('input', (e) => {
+        team.color = e.target.value;
+        state.players.forEach((p) => {
+          if (p.teamId === id) p.color = team.color;
+        });
+        render();
+      });
+      row.querySelector('.team-name-input')?.addEventListener('change', (e) => {
+        team.name = e.target.value.trim() || team.name;
+        refreshPlayerTeamSelect();
+        renderPlayerRotateList();
+      });
+    });
+    refreshPlayerTeamSelect();
+  }
+
+  function syncTeamsFromCount(count) {
+    const old = state.teams;
+    state.teamCount = count;
+    state.teams = defaultTeams(count).map((t, i) => ({
+      ...t,
+      name: old[i]?.name || t.name,
+      color: old[i]?.color || t.color,
+    }));
+    state.players.forEach((p, i) => {
+      if (!state.teams.some((t) => t.id === p.teamId)) {
+        p.teamId = state.teams[i % state.teams.length].id;
+        p.color = getTeamColor(p.teamId);
+      }
+    });
+    renderTeamsEditor();
+  }
+
   function initPlayers(count) {
     const old = state.players;
     state.players = [];
@@ -768,11 +1135,12 @@ import { normalizeAngle } from '/js/constants.js';
       const existing = old[i];
       state.players.push({
         id: i + 1,
+        teamId: existing?.teamId ?? state.teams[i % state.teams.length]?.id ?? 1,
         x: existing ? existing.x : def.x,
         y: existing ? existing.y : def.y,
         angle: existing ? existing.angle : def.angle,
         hp: existing ? existing.hp : state.defaultHp.player_tower,
-        color: PLAYER_COLORS[i],
+        color: existing?.color || getTeamColor(existing?.teamId ?? state.teams[i % state.teams.length]?.id),
       });
     }
     // Remove player tower cells from map if any
@@ -910,6 +1278,8 @@ import { normalizeAngle } from '/js/constants.js';
       info.textContent = `已选中: P${p.id} 主光塔 @ (${p.x}, ${p.y})`;
       panel.classList.add('visible');
       document.getElementById('paramPlayer').style.display = 'block';
+      refreshPlayerTeamSelect();
+      document.getElementById('playerTeam').value = String(p.teamId ?? state.teams[0]?.id ?? 1);
       document.getElementById('playerHp').value = p.hp;
       return;
     }
@@ -1480,6 +1850,11 @@ import { normalizeAngle } from '/js/constants.js';
     selectTool(state.currentTool.startsWith('player_') ? 'wall' : state.currentTool);
   });
 
+  bindRange('teamCount', 'teamCountVal', 'teamCount', (v) => {
+    syncTeamsFromCount(v);
+    render();
+  });
+
   document.getElementById('initialEnergy').addEventListener('input', (e) => {
     state.initialEnergy = Math.max(1, parseInt(e.target.value, 10) || 100);
   });
@@ -1549,6 +1924,12 @@ import { normalizeAngle } from '/js/constants.js';
     applyParamChange('attack_tower', 'hp', Math.max(1, parseInt(e.target.value, 10) || 1));
   });
 
+  document.getElementById('playerTeam')?.addEventListener('change', (e) => {
+    const teamId = parseInt(e.target.value, 10);
+    applyPlayerParam('teamId', teamId);
+    applyPlayerParam('color', getTeamColor(teamId));
+  });
+
   document.getElementById('playerHp').addEventListener('input', (e) => {
     applyPlayerParam('hp', Math.max(1, parseInt(e.target.value, 10) || 1));
   });
@@ -1599,7 +1980,7 @@ import { normalizeAngle } from '/js/constants.js';
   function setImportStatus(msg, isError) {
     const el = document.getElementById('importStatus');
     el.textContent = msg;
-    el.style.color = isError ? '#f85149' : 'var(--muted)';
+    el.style.color = isError ? '#f85149' : 'var(--text-muted)';
   }
 
   function syncSettingsUIFromState() {
@@ -1613,6 +1994,7 @@ import { normalizeAngle } from '/js/constants.js';
     setRange('cellSize', 'cellSizeVal', state.cellSize);
     setRange('visibility', 'visibilityVal', state.visibility);
     setRange('playerCount', 'playerCountVal', state.playerCount);
+    setRange('teamCount', 'teamCountVal', state.teamCount);
     document.getElementById('initialEnergy').value = state.initialEnergy;
     document.getElementById('defaultHpPlayer').value = state.defaultHp.player_tower;
     document.getElementById('defaultHpAttack').value = state.defaultHp.attack_tower;
@@ -1624,75 +2006,48 @@ import { normalizeAngle } from '/js/constants.js';
   }
 
   function importJSON(data, fileName) {
-    if (!data || typeof data !== 'object') throw new Error('文件格式无效');
-    const settings = data.settings || {};
-    const gs = settings.gridSize ?? data.gridSize;
-    if (!gs || gs < 10) throw new Error('缺少 settings.gridSize');
+    const normalized = normalizeMapData(data);
+    const gs = normalized.settings.gridSize;
 
     state.gridSize = gs;
-    state.cellSize = settings.cellSize ?? data.cellSize ?? 30;
-    state.initialEnergy = settings.initialEnergy ?? 100;
-    state.visibility = settings.visibilityRange ?? settings.visibility ?? 5;
-    state.playerCount = settings.playerCount ?? (data.players?.length || 2);
-    state.defaultHp = {
-      player_tower: settings.defaultHp?.player_tower ?? 100,
-      attack_tower: settings.defaultHp?.attack_tower ?? 80,
-      solar: settings.defaultHp?.solar ?? 50,
-      wall: settings.defaultHp?.wall ?? 100,
-    };
-    state.defaultBeaconActivation = settings.defaultBeaconActivation ?? 10;
-    const wc = settings.winConditions || data.winConditions || {};
-    state.winConditions = {
-      captureAllBeacons: wc.captureAllBeacons !== false,
-      destroyEnemyMainTower: wc.destroyEnemyMainTower !== false,
-    };
+    state.cellSize = normalized.settings.cellSize;
+    state.initialEnergy = normalized.settings.initialEnergy;
+    state.visibility = normalized.settings.visibilityRange;
+    state.playerCount = normalized.settings.playerCount;
+    state.teamCount = normalized.settings.teamCount ?? normalized.settings.teams?.length ?? 2;
+    state.teams = (normalized.settings.teams || defaultTeams(state.teamCount)).map((t, i) => ({ ...t, id: t.id ?? i + 1 }));
+    state.defaultHp = { ...normalized.settings.defaultHp };
+    state.defaultBeaconActivation = normalized.settings.defaultBeaconActivation;
+    state.winConditions = { ...normalized.settings.winConditions };
 
     state.cells = {};
-    const elements = data.elements || [];
-    elements.forEach((el) => {
-      if (!el?.type || el.x == null || el.y == null) return;
-      if (el.x < 0 || el.y < 0 || el.x >= gs || el.y >= gs) return;
-      const copy = { ...el };
-      if (copy.type === 'mirror' && copy.angle == null) copy.angle = 45;
-      if (copy.type === 'lens' && copy.focal == null) copy.focal = 5;
-      if (copy.type === 'beacon' && copy.activationThreshold == null) {
-        copy.activationThreshold = state.defaultBeaconActivation;
-      }
-      state.cells[cellKey(copy.x, copy.y)] = copy;
+    normalized.elements.forEach((copy) => {
+      state.cells[cellKey(copy.x, copy.y)] = { ...copy };
     });
 
-    (data.beacons || []).forEach((b) => {
-      if (b.x == null || b.y == null) return;
-      const key = cellKey(b.x, b.y);
-      if (state.cells[key]) return;
-      state.cells[key] = {
-        type: 'beacon',
-        x: b.x,
-        y: b.y,
-        activationThreshold: b.activationThreshold ?? state.defaultBeaconActivation,
-      };
-    });
-
-    const importedPlayers = data.players || [];
+    const importedPlayers = normalized.players;
     state.players = [];
     for (let i = 0; i < state.playerCount; i++) {
       const ip = importedPlayers[i] || importedPlayers[0];
       const def = getDefaultPlayerPos(i, state.playerCount, state.gridSize);
       state.players.push({
         id: ip?.id ?? i + 1,
+        teamId: Number(ip?.teamId ?? ip?.team ?? state.teams[i % state.teams.length]?.id ?? 1),
         x: ip?.x ?? def.x,
         y: ip?.y ?? def.y,
         angle: ip?.angle ?? def.angle,
         hp: ip?.hp ?? state.defaultHp.player_tower,
-        color: ip?.color || PLAYER_COLORS[i],
+        color: ip?.color || getTeamColor(Number(ip?.teamId ?? state.teams[i % state.teams.length]?.id)),
       });
     }
 
     clearSelection();
     syncSettingsUIFromState();
+    renderTeamsEditor();
     rebuildPlayerCells();
     buildToolbar();
     selectTool(state.currentTool === 'eraser' ? 'wall' : state.currentTool);
+    renderPlayerRotateList();
     resizeCanvas();
     updateBeaconCount();
     render();
@@ -1700,6 +2055,7 @@ import { normalizeAngle } from '/js/constants.js';
   }
 
   function exportJSON() {
+    try {
     const elements = Object.values(state.cells).map(el => {
       const base = { type: el.type, x: el.x, y: el.y };
       if (el.type === 'mirror') return { ...base, angle: el.angle };
@@ -1733,6 +2089,8 @@ import { normalizeAngle } from '/js/constants.js';
         initialEnergy: state.initialEnergy,
         visibilityRange: state.visibility,
         playerCount: state.playerCount,
+        teamCount: state.teamCount,
+        teams: state.teams.map((t) => ({ id: t.id, name: t.name, color: t.color })),
         defaultHp: { ...state.defaultHp },
         defaultBeaconActivation: state.defaultBeaconActivation,
         winConditions: { ...state.winConditions },
@@ -1748,6 +2106,7 @@ import { normalizeAngle } from '/js/constants.js';
       },
       players: state.players.map(p => ({
         id: p.id,
+        teamId: p.teamId,
         x: p.x,
         y: p.y,
         angle: p.angle,
@@ -1778,10 +2137,14 @@ import { normalizeAngle } from '/js/constants.js';
     a.download = `phyfog-map-${state.gridSize}x${state.gridSize}-${Date.now()}.json`;
     a.click();
     URL.revokeObjectURL(url);
+    setImportStatus('已导出 map.json');
+    } catch (err) {
+      setImportStatus('导出失败：' + (err.message || '未知错误'), true);
+    }
   }
 
   // ── Init ──
-  mirrorAngleDial = new AimDial(document.getElementById('mirrorAngleDial'), {
+  mirrorAngleDial = new AngleDial(document.getElementById('mirrorAngleDial'), {
     onAngleChange: (a) => {
       mirrorAngleFromDial = true;
       applyMirrorAngle(a);
@@ -1798,6 +2161,7 @@ import { normalizeAngle } from '/js/constants.js';
   requestAnimationFrame(mirrorDialLoop);
 
   function init() {
+    renderTeamsEditor();
     initPlayers(state.playerCount);
     buildToolbar();
     selectTool('wall');

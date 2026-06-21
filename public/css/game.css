@@ -31,7 +31,28 @@ body {
 .hidden { display: none !important; }
 
 /* Entry */
-#entryScreen { align-items: center; justify-content: center; }
+#entryScreen { align-items: center; justify-content: center; position: relative; }
+
+.entry-tutorial-btn {
+  position: absolute;
+  top: max(16px, env(safe-area-inset-top));
+  right: max(16px, env(safe-area-inset-right));
+  z-index: 5;
+  padding: 8px 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(88, 166, 255, 0.45);
+  background: rgba(15, 20, 25, 0.92);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.entry-tutorial-btn:hover {
+  background: rgba(88, 166, 255, 0.15);
+  border-color: var(--accent);
+}
 
 .hero {
   text-align: center;
@@ -97,6 +118,82 @@ body {
   color: var(--muted);
   line-height: 1.5;
   margin-bottom: 4px;
+}
+
+.team-pick-heading {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+  margin: 14px 0 10px;
+  letter-spacing: 0.02em;
+}
+
+.team-pick-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0 0 12px;
+  padding: 10px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.22);
+  border: 1px dashed var(--border);
+}
+
+.team-pick-btn {
+  --team-color: #3b82f6;
+  flex: 1 1 calc(50% - 10px);
+  min-width: 128px;
+  min-height: 48px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 2px solid var(--team-color);
+  background: color-mix(in srgb, var(--team-color) 14%, var(--panel));
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.18s, border-color 0.18s, color 0.18s, box-shadow 0.18s, transform 0.12s;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+.team-pick-name {
+  line-height: 1.2;
+}
+
+.team-pick-meta {
+  font-size: 11px;
+  font-weight: 500;
+  opacity: 0.82;
+  line-height: 1.2;
+}
+
+.team-pick-btn.selected .team-pick-meta {
+  opacity: 0.95;
+}
+
+.team-pick-btn:hover:not(:disabled):not(.selected) {
+  background: color-mix(in srgb, var(--team-color) 28%, var(--panel));
+  transform: translateY(-1px);
+}
+
+.team-pick-btn.selected {
+  background: var(--team-color);
+  border-color: var(--team-color);
+  color: #fff;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--team-color) 35%, transparent),
+    0 8px 24px color-mix(in srgb, var(--team-color) 45%, transparent);
+  transform: translateY(-1px);
+}
+
+.team-pick-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  filter: grayscale(0.35);
 }
 
 .lobby-server-hint {
@@ -615,12 +712,84 @@ body {
   .mobile-visible-bar.is-visible {
     display: flex;
   }
+
+  #radioPanel {
+    display: none !important;
+  }
+
+  .mobile-radio-bar {
+    display: none;
+  }
+
+  .mobile-radio-bar.is-visible {
+    display: flex;
+  }
+
+  .game-hud .radio-radar {
+    display: none !important;
+  }
+
+  .mobile-radio-radar:not(.hidden) {
+    display: flex;
+  }
 }
 
 .radio-opt { display: flex; align-items: center; gap: 6px; font-size: 12px; margin: 6px 0; }
-#radioPanel input[type="text"], #radioPanel input[type="number"] {
+#radioPanel input[type="text"], #radioPanel input[type="number"],
+.mobile-radio-bar input[type="text"], .mobile-radio-bar input[type="number"] {
   width: 100%; background: var(--panel); border: 1px solid var(--border);
   border-radius: 6px; padding: 6px 8px; color: var(--text); font-size: 12px; margin-bottom: 6px;
+}
+
+/* 手机端无线电输入 — 与可见光条同位置 */
+.mobile-radio-bar {
+  display: none;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(68px + env(safe-area-inset-bottom, 0px));
+  z-index: 18;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 14px;
+  background: rgba(13, 17, 23, 0.96);
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.35);
+}
+
+.mobile-radio-header {
+  display: flex;
+  align-items: center;
+  margin-bottom: 2px;
+}
+
+.mobile-radio-title {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.mobile-radio-bar input[type="text"],
+.mobile-radio-bar input[type="number"] {
+  font-size: 16px;
+  min-height: 40px;
+  padding: 8px 10px;
+}
+
+.mobile-radio-radar {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 19;
+  max-width: min(280px, calc(100% - 148px));
+  margin-left: 0;
+  pointer-events: none;
+}
+
+@media (min-width: 769px) {
+  .mobile-radio-radar {
+    display: none !important;
+  }
 }
 
 .hint { font-size: 11px; color: var(--muted); line-height: 1.4; margin-top: 6px; }
@@ -753,16 +922,164 @@ body {
   background: rgba(88, 166, 255, 0.2);
 }
 
+.mirror-build-dial.is-aiming .aim-dial-ring {
+  border-color: #f59e0b;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.25);
+}
+
+.mirror-build-dial .aim-dial-indicator span {
+  border-left-color: #f59e0b;
+}
+
+/* 新手教程 */
+.tutorial-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  pointer-events: none;
+}
+
+.tutorial-spotlight {
+  position: fixed;
+  border-radius: 10px;
+  border: 2px solid rgba(88, 166, 255, 0.9);
+  box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.22), 0 0 18px rgba(88, 166, 255, 0.35);
+  background: transparent;
+  pointer-events: none;
+  z-index: 121;
+  transition: left 0.2s ease, top 0.2s ease, width 0.2s ease, height 0.2s ease;
+}
+
+.tutorial-spotlight.hidden {
+  display: none;
+}
+
+.tutorial-card {
+  position: fixed;
+  left: 50%;
+  bottom: max(24px, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  width: min(420px, calc(100vw - 32px));
+  padding: 18px 20px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: rgba(13, 17, 23, 0.96);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  z-index: 122;
+  pointer-events: auto;
+}
+
+.tutorial-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.tutorial-step-label {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.tutorial-badge {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(88, 166, 255, 0.15);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.tutorial-title {
+  font-size: 17px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.tutorial-body {
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--muted);
+  margin-bottom: 16px;
+}
+
+.tutorial-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.tutorial-actions .btn.disabled,
+.tutorial-actions .btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .game-main { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; min-height: 0; }
 
 .game-hud {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
   padding: 8px 16px;
   background: var(--card);
   border-bottom: 1px solid var(--border);
   font-size: 13px;
+  flex-wrap: wrap;
+}
+
+.radio-radar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: rgba(15, 20, 25, 0.92);
+  max-width: min(320px, 42vw);
+  transition: border-color 0.2s, box-shadow 0.2s;
+  margin-left: auto;
+}
+
+.radio-radar-icon {
+  font-size: 20px;
+  line-height: 1;
+}
+
+.radio-radar-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.radio-radar-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.radio-radar-text {
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.radio-radar.is-ping {
+  border-color: #22d3ee;
+  box-shadow: 0 0 24px rgba(34, 211, 238, 0.55), inset 0 0 12px rgba(34, 211, 238, 0.12);
+  animation: radioRadarFlash 0.45s ease-out 2;
+}
+
+@keyframes radioRadarFlash {
+  0% { transform: scale(1); filter: brightness(1); }
+  35% { transform: scale(1.04); filter: brightness(1.35); }
+  100% { transform: scale(1); filter: brightness(1); }
 }
 
 .hud-left { display: flex; gap: 20px; }
@@ -1031,7 +1348,8 @@ body {
     display: flex;
   }
 
-  .aim-dial {
+  .aim-dial,
+  .mirror-build-dial {
     top: 52px;
     bottom: auto;
     width: 132px;

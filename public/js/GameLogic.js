@@ -1,7 +1,7 @@
 /**
  * GameLogic.js — 游戏状态（客户端仅用于渲染；权威计算在服务器 serverGame.mjs）
  */
-import { BANDS, BUILD_COSTS, cellKey, normalizeAngle, INVULNERABLE_TYPES, DEFAULT_FIRE_COOLDOWN } from './constants.js';
+import { BANDS, BUILD_COSTS, cellKey, normalizeAngle, INVULNERABLE_TYPES, DEFAULT_FIRE_COOLDOWN, roundStat, OPTICS_UV_UPGRADE_COST, formatStat } from './constants.js';
 import { RayCaster } from './RayCaster.js';
 import { VisionGrid } from './VisionGrid.js';
 
@@ -16,6 +16,7 @@ export class GameLogic {
       captureAllBeacons: true,
       destroyEnemyMainTower: true,
     };
+    this.teams = mapData.settings?.teams || [];
     this.cells = {};
     this.beacons = [];
     this.players = [];
@@ -39,9 +40,10 @@ export class GameLogic {
     const md = this.mapData;
     (md.elements || []).forEach(el => {
       const key = cellKey(el.x, el.y);
-      const copy = { ...el, maxHp: el.hp ?? 100, hp: el.hp ?? 100 };
+      const copy = { ...el, maxHp: roundStat(el.hp ?? 100), hp: roundStat(el.hp ?? 100) };
       if (copy.type === 'mirror' || copy.type === 'lens') {
         copy.invulnerable = true;
+        if (el.uvGrade) copy.uvGrade = true;
         if (copy.type === 'mirror') {
           copy.angle = normalizeAngle(copy.angle ?? 45);
         }
@@ -75,27 +77,32 @@ export class GameLogic {
 
     const mapPlayers = md.players || [];
     const count = Math.max(mapPlayers.length, md.settings?.playerCount || 2);
+    const teams = this.teams.length ? this.teams : [{ id: 1 }, { id: 2 }];
+    const teamColor = (teamId) => teams.find((t) => t.id === teamId)?.color;
 
     for (let i = 0; i < count; i++) {
       const mp = mapPlayers[i] || mapPlayers[0] || { x: 10, y: 10, angle: 0, hp: 100, color: '#3b82f6' };
+      const teamId = Number(mp.teamId ?? mp.team ?? teams[i % teams.length].id);
       this.players.push({
         id: mp.id ?? i + 1,
         playerIndex: i,
+        teamId,
         nickname: `P${i + 1}`,
         towerX: mp.x,
         towerY: mp.y,
         angle: mp.angle ?? 0,
-        hp: mp.hp ?? 100,
-        maxHp: mp.hp ?? 100,
-        energy: md.settings?.initialEnergy ?? 100,
+        hp: roundStat(mp.hp ?? 100),
+        maxHp: roundStat(mp.hp ?? 100),
+        energy: roundStat(md.settings?.initialEnergy ?? 100),
         alive: true,
-        color: mp.color || ['#3b82f6', '#ef4444', '#22c55e', '#f59e0b'][i],
+        color: mp.color || teamColor(teamId) || ['#3b82f6', '#ef4444', '#22c55e', '#f59e0b'][i],
         activeTower: { type: 'main' },
         capturedTowers: [],
         fireCooldownSec: md.settings?.fireCooldown ?? DEFAULT_FIRE_COOLDOWN,
         fireCooldownUntil: 0,
         visionGrid: new VisionGrid(this.gridSize),
         sharedVisionFrom: new Set(),
+        radioPing: null,
       });
       this._initVision(i);
     }
@@ -150,7 +157,11 @@ export class GameLogic {
   }
 
   isAlly(a, b) {
-    return a === b;
+    if (a === b) return true;
+    const pa = this.players[a];
+    const pb = this.players[b];
+    if (!pa || !pb) return false;
+    return pa.teamId === pb.teamId;
   }
 
   rotate(playerIdx, delta) {
@@ -245,7 +256,7 @@ export class GameLogic {
     if (this.players.some((pl, i) => i !== playerIdx && pl.alive && pl.towerX === x && pl.towerY === y)) {
       return { ok: false, error: '无法移到其它光塔上' };
     }
-    p.energy -= cost;
+    p.energy = roundStat(p.energy - cost);
     p.towerX = x;
     p.towerY = y;
     if (p.visionGrid) {
@@ -305,10 +316,17 @@ export class GameLogic {
     if (this.gameTime < (p.fireCooldownUntil ?? 0)) return null;
     const band = BANDS[bandId];
     let cost = band.cost ?? bandEnergy;
-    if (bandId === 'visible') cost = bandEnergy;
-    if (p.energy < cost) return null;
+    if (bandId === 'visible') cost = roundStat(bandEnergy);
+    else cost = roundStat(cost);
 
-    p.energy -= cost;
+    let carriedEnergy = 0;
+    if (bandId === 'radio' && radioPayload?.energy > 0) {
+      carriedEnergy = roundStat(Math.max(0, Number(radioPayload.energy)));
+    }
+    const totalCost = roundStat(cost + carriedEnergy);
+    if (p.energy < totalCost) return null;
+
+    p.energy = roundStat(p.energy - totalCost);
     const pos = this.getActiveTowerPos(playerIdx);
     const shootOriginKey = p.activeTower?.type === 'attack' && p.activeTower.key
       ? p.activeTower.key
@@ -322,7 +340,7 @@ export class GameLogic {
       bandId, cost, playerIdx,
       {
         radioMessage: radioPayload?.message,
-        radioEnergy: radioPayload?.energy || 0,
+        radioEnergy: carriedEnergy || roundStat(radioPayload?.energy || 0),
         shootOriginKey,
       }
     );
@@ -345,9 +363,12 @@ export class GameLogic {
       const ally = this.players[allyIdx];
       if (!ally) return;
       ally.sharedVisionFrom.add(shooterIdx);
-      this._mergeVision(allyIdx, shooterIdx);
-      if (message) this.messages.push({ from: shooterIdx, to: allyIdx, text: message, time: this.gameTime });
-      if (energy > 0) ally.energy += energy;
+      this._mergeShooterVisionIntoAlly(allyIdx, shooterIdx);
+      if (message) {
+        this.messages.push({ from: shooterIdx, to: allyIdx, text: message, time: this.gameTime });
+        ally.radioPing = { fromIdx: shooterIdx, message, at: this.gameTime };
+      }
+      if (energy > 0) ally.energy = roundStat(ally.energy + energy);
     });
 
     result.solarClaims?.forEach(({ key, owner }) => {
@@ -362,8 +383,9 @@ export class GameLogic {
         const target = this.players[hit.playerIdx];
         if (!target) return;
         if (hit.execute) target.hp = 0;
-        else if (hit.damage) target.hp -= hit.damage;
+        else if (hit.damage) target.hp = roundStat(target.hp - hit.damage);
         if (target.hp <= 0) { target.alive = false; target.hp = 0; }
+        else target.hp = roundStat(target.hp);
         return;
       }
       const el = this.cells[hit.key];
@@ -379,15 +401,15 @@ export class GameLogic {
       }
 
       if (hit.convert && el.type === 'solar') {
-        p.energy += Math.floor((result.energy || 1) * (el.conversionRate ?? 0.6));
+        p.energy = roundStat(p.energy + (result.energy || 1) * (el.conversionRate ?? 0.6));
         return;
       }
       if (hit.noDamage) return;
       if (hit.gamma) {
         if (hit.execute) el.hp = 0;
-        else el.hp = (el.hp ?? 100) - (hit.damage || 0);
+        else el.hp = roundStat((el.hp ?? 100) - (hit.damage || 0));
       } else if (hit.damage) {
-        el.hp = (el.hp ?? 100) - hit.damage;
+        el.hp = roundStat((el.hp ?? 100) - hit.damage);
       }
       if (el.hp <= 0) {
         if (el.type === 'attack_tower' && el.owner != null) {
@@ -409,6 +431,19 @@ export class GameLogic {
     });
 
     this._checkWin();
+  }
+
+  /** 无线电命中：友军获得发射者已探索视野（单向） */
+  _mergeShooterVisionIntoAlly(allyIdx, shooterIdx) {
+    const ally = this.players[allyIdx];
+    const shooter = this.players[shooterIdx];
+    if (!ally?.visionGrid || !shooter?.visionGrid) return;
+    for (let y = 0; y < this.gridSize; y++) {
+      for (let x = 0; x < this.gridSize; x++) {
+        if (shooter.visionGrid.get(x, y)) ally.visionGrid.set(x, y, true);
+      }
+    }
+    this._ensureOwnTowersVisible(allyIdx, ally.visionGrid);
   }
 
   _mergeVision(aIdx, bIdx) {
@@ -438,10 +473,11 @@ export class GameLogic {
     if (!cfg) return { ok: false, error: '未知建筑' };
     let cost = cfg.baseCost;
     let hp = cfg.hp ?? 20;
-    if (cfg.hpFromEnergy) { cost = energyInput; hp = energyInput; }
-    else if (cfg.hpFromHalfEnergy) { cost = energyInput; hp = Math.floor(energyInput / 2); }
+    if (cfg.hpFromEnergy) { cost = roundStat(energyInput); hp = cost; }
+    else if (cfg.hpFromHalfEnergy) { cost = roundStat(energyInput); hp = roundStat(energyInput / 2); }
+    else { cost = roundStat(cost); hp = roundStat(hp); }
     if (p.energy < cost) return { ok: false, error: '能量不足' };
-    p.energy -= cost;
+    p.energy = roundStat(p.energy - cost);
     const el = { type, x, y, hp, maxHp: hp, owner: playerIdx, playerBuilt: type === 'solar' };
     if (type === 'mirror') {
       el.angle = mirrorAngle ?? 45;
@@ -464,6 +500,25 @@ export class GameLogic {
     return { ok: true, key };
   }
 
+  /** 平面镜/透镜紫外线镀膜：10J，升级后可反射/聚焦紫外光 */
+  upgradeOptics(playerIdx, x, y) {
+    const p = this.players[playerIdx];
+    if (!p?.alive || this.paused) return { ok: false, error: '无法升级' };
+    if (!this.canSee(playerIdx, x, y)) return { ok: false, error: '不在视野内' };
+    const key = cellKey(x, y);
+    const el = this.cells[key];
+    if (!el || (el.type !== 'mirror' && el.type !== 'lens')) {
+      return { ok: false, error: '仅平面镜或透镜可升级' };
+    }
+    if (el.uvGrade) return { ok: false, error: '已具备紫外线镀膜' };
+    const cost = OPTICS_UV_UPGRADE_COST;
+    if (p.energy < cost) return { ok: false, error: `需要 ${formatStat(cost)}J 能量` };
+    p.energy = roundStat(p.energy - cost);
+    el.uvGrade = true;
+    this.rayCaster.invalidateMirrors();
+    return { ok: true, key };
+  }
+
   tick(dt) {
     if (this.paused || this.winner != null) return;
     this.gameTime += dt;
@@ -474,7 +529,7 @@ export class GameLogic {
       Object.values(this.cells).forEach(el => {
         if (el.type === 'solar' && el.owner != null) {
           const owner = this.players[el.owner];
-          if (owner?.alive) owner.energy += el.energyPer10s ?? 2;
+          if (owner?.alive) owner.energy = roundStat(owner.energy + (el.energyPer10s ?? 2));
         }
       });
     }
@@ -483,9 +538,12 @@ export class GameLogic {
 
   _checkWin() {
     const alive = this.players.filter(p => p.alive);
-    if (this.winConditions.destroyEnemyMainTower !== false && alive.length === 1) {
-      this.winner = alive[0].playerIndex;
-      return;
+    if (this.winConditions.destroyEnemyMainTower !== false && alive.length >= 1) {
+      const aliveTeams = new Set(alive.map(p => p.teamId));
+      if (aliveTeams.size === 1) {
+        this.winner = alive[0].playerIndex;
+        return;
+      }
     }
     if (this.winConditions.captureAllBeacons !== false && this.beacons.length > 0) {
       const owners = new Set(this.beacons.map(b => b.owner).filter(o => o != null));
@@ -620,7 +678,18 @@ export class GameLogic {
         const ray = this.shoot(
           fromPlayerIndex, action.bandId, action.bandEnergy, action.radioPayload, action.aimAngle
         );
-        return ray ? { ok: true } : { ok: false, error: '无法发射（冷却/能量/暂停）' };
+        if (!ray) return { ok: false, error: '无法发射（冷却/能量/暂停）' };
+        const contact = ray.allyContacts?.find((c) => c.message) || ray.allyContacts?.[0];
+        return {
+          ok: true,
+          radioContact: contact
+            ? {
+              recipientIdx: contact.allyIdx,
+              fromIdx: fromPlayerIndex,
+              message: contact.message || '',
+            }
+            : null,
+        };
       }
       case 'build':
         return this.build(
@@ -632,6 +701,8 @@ export class GameLogic {
         return { ok: true };
       case 'relocateMain':
         return this.relocateMain(fromPlayerIndex, action.x, action.y);
+      case 'upgradeOptics':
+        return this.upgradeOptics(fromPlayerIndex, action.x, action.y);
       default:
         return { ok: false, error: '未知操作' };
     }

@@ -154,11 +154,11 @@ export class Network {
 
 
 
-  createRoom(nickname, mapData) {
+  createRoom(nickname, mapData, teamId) {
 
     return new Promise((resolve) => {
 
-      this.socket.emit('room:create', { nickname, mapData }, (res) => {
+      this.socket.emit('room:create', { nickname, mapData, teamId }, (res) => {
 
         if (res?.ok) {
 
@@ -182,11 +182,11 @@ export class Network {
 
 
 
-  joinRoom(roomCode, nickname) {
+  joinRoom(roomCode, nickname, teamId) {
 
     return new Promise((resolve) => {
 
-      this.socket.emit('room:join', { roomCode, nickname }, (res) => {
+      this.socket.emit('room:join', { roomCode, nickname, teamId }, (res) => {
 
         if (res?.ok) {
 
@@ -203,6 +203,26 @@ export class Network {
         resolve(res);
 
       });
+
+    });
+
+  }
+
+
+
+  fetchRoomInfo(roomCode) {
+
+    return new Promise((resolve) => {
+
+      if (!this.socket?.connected) {
+
+        resolve({ ok: false, error: '未连接' });
+
+        return;
+
+      }
+
+      this.socket.emit('room:info', { roomCode }, (res) => resolve(res || { ok: false }));
 
     });
 

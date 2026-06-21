@@ -12,6 +12,7 @@
 
 <!-- 入口 -->
 <section id="entryScreen" class="screen active">
+  <button type="button" id="btnTutorial" class="entry-tutorial-btn">进入教程</button>
   <div class="hero">
     <h1>PhyFog <span>Radiant War</span></h1>
     <p class="subtitle">光学辐射对战 · 联机版</p>
@@ -32,17 +33,38 @@
         <span>📂 导入地图 JSON</span>
       </label>
       <span id="mapFileName" class="file-name">未选择文件</span>
+      <p class="team-pick-heading">选择你的队伍</p>
+      <div id="createTeamPick" class="team-pick-grid hidden"></div>
       <button id="btnDoCreate" class="btn primary full">创建房间</button>
     </div>
     <div id="joinPanel" class="panel hidden">
       <p class="panel-guide">① 向房主索要 <strong>6 位房间号</strong>  ② 输入昵称和房间号加入</p>
       <input id="nicknameJoin" type="text" placeholder="昵称" maxlength="16">
       <input id="roomCodeInput" type="text" placeholder="6位房间号" maxlength="6" inputmode="numeric" pattern="[0-9]{6}">
+      <p class="team-pick-heading">选择你的队伍</p>
+      <div id="joinTeamPick" class="team-pick-grid hidden"></div>
       <button id="btnDoJoin" class="btn primary full">加入房间</button>
     </div>
     <a href="/map-editor.html" class="link">打开地图编辑器 →</a>
   </div>
 </section>
+
+<!-- 新手教程引导层 -->
+<div id="tutorialOverlay" class="tutorial-overlay hidden" aria-live="polite">
+  <div id="tutorialSpotlight" class="tutorial-spotlight hidden"></div>
+  <div id="tutorialCard" class="tutorial-card">
+    <div class="tutorial-card-header">
+      <span id="tutorialStepLabel" class="tutorial-step-label">1 / 9</span>
+      <span class="tutorial-badge">新手教程</span>
+    </div>
+    <h3 id="tutorialTitle" class="tutorial-title">欢迎</h3>
+    <p id="tutorialBody" class="tutorial-body"></p>
+    <div class="tutorial-actions">
+      <button type="button" id="tutorialSkip" class="btn small secondary">跳过教程</button>
+      <button type="button" id="tutorialNext" class="btn primary">下一步</button>
+    </div>
+  </div>
+</div>
 
 <!-- 大厅 -->
 <section id="lobbyScreen" class="screen">
@@ -88,7 +110,7 @@
         <label class="radio-opt"><input type="radio" name="radioMode" value="message" checked> 携带消息</label>
         <input id="radioMsg" type="text" placeholder="无线电消息" maxlength="64">
         <label class="radio-opt"><input type="radio" name="radioMode" value="energy"> 携带能量</label>
-        <input id="radioEnergyAmt" type="number" min="1" max="50" value="5">
+        <input id="radioEnergyAmt" type="number" min="0.1" max="50" step="0.1" value="5">
       </div>
       <div class="fire-btn-wrap">
         <button id="btnFire" class="btn fire full" type="button">
@@ -108,7 +130,7 @@
         <label>透镜焦距 <span id="lensBuildFocalVal">5</span> 格</label>
         <input id="lensBuildFocal" type="range" min="2" max="10" value="5">
       </div>
-      <p class="hint">在视野内点击格子建设 · 点击透镜显示聚焦圈</p>
+      <p class="hint">平面镜用右下角圆盘调方向 · 透镜可调焦距 · 点击格子放置</p>
     </div>
     <div class="sidebar-block">
       <h3>视角</h3>
@@ -117,6 +139,11 @@
       <div id="solarInfoPanel" class="info-panel hidden">
         <div class="info-panel-title">☀ 太阳能板</div>
         <div id="solarInfoText" class="info-panel-body"></div>
+      </div>
+      <div id="opticsInfoPanel" class="info-panel hidden">
+        <div class="info-panel-title">🔭 光学元件</div>
+        <div id="opticsInfoText" class="info-panel-body"></div>
+        <button type="button" id="btnUpgradeOptics" class="btn secondary full">紫外线镀膜 (10J)</button>
       </div>
       <div id="attackTowerList" class="tower-list"></div>
       <p class="hint">在视野内点击格子建设 · 点击透镜显示聚焦圈 · 双指缩放 · 单指拖屏</p>
@@ -127,8 +154,15 @@
     <header class="game-hud">
       <div class="hud-left">
         <span class="hud-item">房间 <strong id="gameRoomCode">------</strong></span>
-        <span class="hud-item">能量 <strong id="hudEnergy">100 J</strong></span>
+        <span class="hud-item">能量 <strong id="hudEnergy">100.0 J</strong></span>
         <span class="hud-item">时间 <strong id="hudTime">00:00</strong></span>
+      </div>
+      <div id="radioRadar" class="radio-radar hidden" aria-live="polite">
+        <span class="radio-radar-icon">📡</span>
+        <div class="radio-radar-body">
+          <span class="radio-radar-label">无线电联络</span>
+          <span id="radioRadarText" class="radio-radar-text">—</span>
+        </div>
       </div>
       <div id="hostControls" class="hud-right">
         <button id="btnPause" class="btn small">暂停</button>
@@ -151,6 +185,22 @@
       </div>
       <div class="mobile-visible-steps" id="mobileVisibleSteps" aria-label="能量档位"></div>
     </div>
+    <div id="mobileRadioBar" class="mobile-radio-bar">
+      <div class="mobile-radio-header">
+        <span class="mobile-radio-title">无线电</span>
+      </div>
+      <label class="radio-opt"><input type="radio" name="radioModeMobile" value="message" checked> 携带消息</label>
+      <input id="mobileRadioMsg" type="text" placeholder="无线电消息" maxlength="64" autocomplete="off">
+      <label class="radio-opt"><input type="radio" name="radioModeMobile" value="energy"> 携带能量</label>
+      <input id="mobileRadioEnergyAmt" type="number" min="0.1" max="50" step="0.1" value="5" inputmode="decimal">
+    </div>
+    <div id="mobileRadioRadar" class="radio-radar mobile-radio-radar hidden" aria-live="polite">
+      <span class="radio-radar-icon">📡</span>
+      <div class="radio-radar-body">
+        <span class="radio-radar-label">无线电联络</span>
+        <span id="mobileRadioRadarText" class="radio-radar-text">—</span>
+      </div>
+    </div>
     <div class="mobile-controls" id="mobileControls">
       <button type="button" class="touch-btn" id="btnZoomOut" aria-label="缩小">−</button>
       <div class="mobile-fire-wrap">
@@ -165,6 +215,14 @@
       <div class="aim-dial-ring" id="aimDialRing">
         <div class="aim-dial-indicator" id="aimDialIndicator"><span></span></div>
         <span class="aim-dial-hint">长按瞄准</span>
+      </div>
+    </div>
+    <!-- 建设平面镜：镜面方向圆盘（与瞄准圆盘相同交互） -->
+    <div id="mirrorBuildDial" class="aim-dial mirror-build-dial hidden" aria-label="镜面方向">
+      <div class="aim-dial-arrows"></div>
+      <div class="aim-dial-ring">
+        <div class="aim-dial-indicator"><span></span></div>
+        <span class="aim-dial-hint">镜面方向</span>
       </div>
     </div>
   </div>

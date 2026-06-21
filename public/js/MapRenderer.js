@@ -18,7 +18,7 @@ export class MapRenderer {
     this.userZoomMax = 3.5;
     this.userPan = { x: 0, y: 0 };
     this._panLimit = 1200;
-    this.selectedLens = null;
+    this.selectedOptics = null;
     this.selectedSolar = null;
     this._displayTime = 0;
     this._viewportW = 0;
@@ -60,19 +60,38 @@ export class MapRenderer {
     this.userPan.y = Math.max(-lim, Math.min(lim, this.userPan.y + dy));
   }
 
-  selectLensAt(game, localPlayerIdx, gx, gy) {
+  selectOpticsAt(game, localPlayerIdx, gx, gy) {
     const key = `${gx},${gy}`;
     const el = game.cells[key];
-    if (el?.type === 'lens' && game.canSee(localPlayerIdx, gx, gy)) {
-      this.selectedLens = { x: gx, y: gy, focal: el.focal || 5 };
+    if ((el?.type === 'mirror' || el?.type === 'lens') && game.canSee(localPlayerIdx, gx, gy)) {
+      this.selectedOptics = { x: gx, y: gy, type: el.type, focal: el.focal || 5 };
       return true;
     }
-    this.selectedLens = null;
+    this.selectedOptics = null;
     return false;
   }
 
+  clearOpticsSelection() {
+    this.selectedOptics = null;
+  }
+
+  /** @deprecated */
+  selectLensAt(game, localPlayerIdx, gx, gy) {
+    return this.selectOpticsAt(game, localPlayerIdx, gx, gy)
+      && this.selectedOptics?.type === 'lens';
+  }
+
+  /** @deprecated */
   clearLensSelection() {
-    this.selectedLens = null;
+    this.clearOpticsSelection();
+  }
+
+  get selectedLens() {
+    return this.selectedOptics?.type === 'lens' ? this.selectedOptics : null;
+  }
+
+  set selectedLens(v) {
+    this.selectedOptics = v ? { ...v, type: 'lens' } : null;
   }
 
   selectSolarAt(game, localPlayerIdx, gx, gy) {
@@ -290,13 +309,13 @@ export class MapRenderer {
       }
     }
 
-    if (this.selectedLens) {
-      const el = game.cells[`${this.selectedLens.x},${this.selectedLens.y}`];
-      if (el?.type === 'lens' && canSee(this.selectedLens.x, this.selectedLens.y)) {
-        const focal = el.focal ?? this.selectedLens.focal ?? 5;
-        this._drawFocusCircle(ctx, cs, this.selectedLens.x, this.selectedLens.y, focal, true);
+    if (this.selectedOptics?.type === 'lens') {
+      const el = game.cells[`${this.selectedOptics.x},${this.selectedOptics.y}`];
+      if (el?.type === 'lens' && canSee(this.selectedOptics.x, this.selectedOptics.y)) {
+        const focal = el.focal ?? this.selectedOptics.focal ?? 5;
+        this._drawFocusCircle(ctx, cs, this.selectedOptics.x, this.selectedOptics.y, focal, true);
       } else {
-        this.selectedLens = null;
+        this.selectedOptics = null;
       }
     }
 
@@ -307,10 +326,15 @@ export class MapRenderer {
     ctx.textAlign = 'right';
     ctx.fillText(`缩放 ${Math.round(this.userZoom * 100)}%`, vw - 8, vh - 8);
     ctx.textAlign = 'left';
-    const lensHint = this.selectedLens
-      ? `透镜聚焦圈 f=${game.cells[`${this.selectedLens.x},${this.selectedLens.y}`]?.focal ?? '?'}格`
-      : '滚轮/双指缩放 · 单指拖屏 · 点击透镜显示聚焦圈';
-    ctx.fillText(lensHint, 8, vh - 8);
+    const sel = this.selectedOptics;
+    const selEl = sel ? game.cells[`${sel.x},${sel.y}`] : null;
+    let hint = '滚轮/双指缩放 · 单指拖屏 · 点击平面镜/透镜选中';
+    if (selEl?.type === 'lens') {
+      hint = `透镜 f=${selEl.focal ?? '?'}格${selEl.uvGrade ? ' · 已镀膜' : ' · 可升级镀膜'}`;
+    } else if (selEl?.type === 'mirror') {
+      hint = `平面镜 ${Math.round(selEl.angle ?? 0)}°${selEl.uvGrade ? ' · 已镀膜' : ' · 可升级镀膜'}`;
+    }
+    ctx.fillText(hint, 8, vh - 8);
   }
 
   _drawElement(el, cs, game, localPlayerIdx) {
@@ -330,21 +354,37 @@ export class MapRenderer {
         ctx.strokeStyle = '#555'; ctx.lineWidth = 1 / this.camera.zoom;
         ctx.strokeRect(x + pad, y + pad, cs - pad * 2, cs - pad * 2); break;
       case 'mirror': {
+        const isSel = this.selectedOptics?.type === 'mirror'
+          && this.selectedOptics.x === el.x && this.selectedOptics.y === el.y;
         const seg = getMirrorSegment(el);
-        ctx.strokeStyle = '#c0d8f0';
-        ctx.lineWidth = 3 / this.camera.zoom;
+        ctx.strokeStyle = el.uvGrade ? '#fbbf24' : '#c0d8f0';
+        ctx.lineWidth = (el.uvGrade ? 4 : 3) / this.camera.zoom;
         ctx.beginPath();
         ctx.moveTo(seg.x1 * cs, seg.y1 * cs);
         ctx.lineTo(seg.x2 * cs, seg.y2 * cs);
         ctx.stroke();
+        if (isSel && !el.uvGrade) {
+          ctx.strokeStyle = 'rgba(165,243,252,0.7)';
+          ctx.lineWidth = 5 / this.camera.zoom;
+          ctx.beginPath();
+          ctx.moveTo(seg.x1 * cs, seg.y1 * cs);
+          ctx.lineTo(seg.x2 * cs, seg.y2 * cs);
+          ctx.stroke();
+        }
         break;
       }
       case 'lens': {
-        const isSel = this.selectedLens?.x === el.x && this.selectedLens?.y === el.y;
-        ctx.strokeStyle = isSel ? '#a5f3fc' : '#67e8f9';
-        ctx.lineWidth = (isSel ? 3 : 2) / this.camera.zoom;
-        ctx.beginPath(); ctx.arc(cx, cy, cs * 0.28, 0, Math.PI * 2); ctx.stroke();
-        if (isSel) {
+        const isSel = this.selectedOptics?.type === 'lens'
+          && this.selectedOptics.x === el.x && this.selectedOptics.y === el.y;
+        ctx.strokeStyle = el.uvGrade ? '#fbbf24' : (isSel ? '#a5f3fc' : '#67e8f9');
+        ctx.lineWidth = (el.uvGrade ? 3 : isSel ? 3 : 2) / this.camera.zoom;
+        ctx.beginPath();
+        ctx.arc(cx, cy, cs * 0.28, 0, Math.PI * 2);
+        ctx.stroke();
+        if (el.uvGrade) {
+          ctx.fillStyle = 'rgba(251,191,36,0.22)';
+          ctx.fill();
+        } else if (isSel) {
           ctx.fillStyle = 'rgba(103,232,249,0.15)';
           ctx.fill();
         }
@@ -403,7 +443,7 @@ export class MapRenderer {
         this._drawBeacon({ x: el.x, y: el.y }, cs, null); break;
     }
 
-    if (el.hp != null && el.maxHp) {
+    if (el.hp != null && el.maxHp && el.type !== 'mirror' && el.type !== 'lens') {
       const ratio = Math.max(0, el.hp / el.maxHp);
       ctx.fillStyle = ratio > 0.5 ? '#3fb950' : '#f85149';
       ctx.fillRect(x + 2, y + cs - 7, (cs - 4) * ratio, 3);

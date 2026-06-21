@@ -14,7 +14,10 @@ import { MapRenderer } from './MapRenderer.js';
 
 import { AimDial } from './AimDial.js';
 
-import { BANDS, BUILD_COSTS, visibleColor, normalizeAngle } from './constants.js';
+import { BANDS, BUILD_COSTS, visibleColor, normalizeAngle, formatStat, roundStat, OPTICS_UV_UPGRADE_COST } from './constants.js';
+import { normalizeMapData } from './mapFormat.js';
+import { Tutorial, TUTORIAL_STEPS } from './Tutorial.js';
+import { TUTORIAL_MAP } from './tutorialMap.js';
 
 /** 建设按钮显示顺序（太阳能板提前，避免手机横向滚动看不到） */
 const BUILD_ORDER = ['wall', 'mirror', 'lens', 'solar', 'attack_tower', 'lead'];
@@ -56,14 +59,22 @@ let lensBuildFocal = 5;
 let relocateMode = false;
 
 let aimDial = null;
-/** @type {'aim'|'mirrorBuild'} */
-let dialMode = 'aim';
+let mirrorBuildDial = null;
+
+let tutorialActive = false;
+let tutorial = null;
+let lastFrameTime = 0;
 
 let radioMode = 'message';
 
 let radioMessage = '';
 
 let radioEnergyAmount = 5;
+
+let selectedTeamId = null;
+let lastRadioPingAt = -1;
+let joinRoomFetchTimer = null;
+let lobbyTeams = [];
 
 let animId = null;
 
@@ -317,6 +328,290 @@ async function tryAutoRejoin() {
 
 
 
+function getTutorialCtx() {
+  return { selectedBand, visibleEnergy };
+}
+
+function teamName(teamId) {
+  const teams = game?.teams || mapData?.settings?.teams || lobbyTeams || [];
+  return teams.find((t) => t.id === teamId)?.name || `队伍${teamId}`;
+}
+
+function buildTeamPickContent(t, slots) {
+  if (!slots) {
+    return `<span class="team-pick-name">${t.name}</span>`;
+  }
+  const teamSlots = slots.filter((s) => Number(s.teamId) === Number(t.id));
+  const total = teamSlots.length;
+  const joined = teamSlots.filter((s) => s.taken).length;
+  return `<span class="team-pick-name">${t.name}</span>`
+    + `<span class="team-pick-meta">已${joined}人 / 需${total}人</span>`;
+}
+
+function syncTeamPickSelection(box) {
+  if (!box) return;
+  box.querySelectorAll('.team-pick-btn').forEach((btn) => {
+    const teamId = Number(btn.dataset.teamId);
+    btn.classList.toggle('selected', teamId === selectedTeamId);
+  });
+}
+
+function renderTeamPick(containerId, teams, slots) {
+  const id = String(containerId || '').replace(/^#/, '');
+  const box = document.getElementById(id);
+  if (!box) return;
+  if (!teams?.length) {
+    box.classList.add('hidden');
+    box.innerHTML = '';
+    return;
+  }
+  box.classList.remove('hidden');
+  box.innerHTML = '';
+  teams.forEach((t) => {
+    const freeSlots = slots
+      ? slots.filter((s) => s.teamId === t.id && !s.taken).length
+      : null;
+    const full = freeSlots === 0;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'team-pick-btn';
+    btn.dataset.teamId = String(t.id);
+    btn.style.setProperty('--team-color', t.color || '#3b82f6');
+    btn.disabled = full;
+    btn.innerHTML = full
+      ? `<span class="team-pick-name">${t.name}（已满）</span>${slots ? `<span class="team-pick-meta">已${slots.filter((s) => Number(s.teamId) === Number(t.id) && s.taken).length}人 / 需${slots.filter((s) => Number(s.teamId) === Number(t.id)).length}人</span>` : ''}`
+      : buildTeamPickContent(t, slots);
+    if (selectedTeamId === t.id) btn.classList.add('selected');
+    btn.addEventListener('click', () => {
+      if (btn.disabled) return;
+      selectedTeamId = t.id;
+      syncTeamPickSelection(box);
+    });
+    box.appendChild(btn);
+  });
+  if (!selectedTeamId || !teams.some((t) => t.id === selectedTeamId)) {
+    const first = teams.find((t) => {
+      if (!slots) return true;
+      return slots.some((s) => s.teamId === t.id && !s.taken);
+    }) || teams[0];
+    selectedTeamId = first?.id ?? teams[0].id;
+  }
+  syncTeamPickSelection(box);
+}
+
+function renderCreateTeamPick() {
+  renderTeamPick('createTeamPick', mapData?.settings?.teams);
+}
+
+async function refreshJoinTeamPick() {
+  const code = $('#roomCodeInput')?.value.trim();
+  if (!code || code.length !== 6) {
+    renderTeamPick('joinTeamPick', null);
+    return;
+  }
+  try {
+    await ensureConnected();
+  } catch {
+    return;
+  }
+  const info = await net.fetchRoomInfo(code);
+  if (!info?.ok) {
+    renderTeamPick('joinTeamPick', null);
+    return;
+  }
+  renderTeamPick('joinTeamPick', info.teams, info.slots);
+}
+
+function showRadioRadar(contact) {
+  if (!contact) return;
+  const recipientIdx = contact.recipientIdx ?? localPlayerIdx;
+  if (recipientIdx !== localPlayerIdx) return;
+
+  const fromIdx = contact.fromIdx;
+  const sender = fromIdx != null ? game?.players[fromIdx] : null;
+  const senderLabel = sender?.nickname || (fromIdx != null ? `P${fromIdx + 1}` : '友军');
+  const text = contact.message
+    ? `${senderLabel}: ${contact.message}`
+    : `收到 ${senderLabel} 的无线电 · 已获得其视野`;
+
+  [$('#radioRadar'), $('#mobileRadioRadar')].forEach((el) => {
+    if (!el) return;
+    el.classList.remove('hidden');
+    el.classList.remove('is-ping');
+    void el.offsetWidth;
+    el.classList.add('is-ping');
+  });
+  const textEl = $('#radioRadarText');
+  const mobileTextEl = $('#mobileRadioRadarText');
+  if (textEl) textEl.textContent = text;
+  if (mobileTextEl) mobileTextEl.textContent = text;
+}
+
+function checkRadioPingFromState() {
+  const p = game?.players[localPlayerIdx];
+  if (!p?.radioPing) return;
+  const at = p.radioPing.at ?? 0;
+  if (at === lastRadioPingAt) return;
+  lastRadioPingAt = at;
+  showRadioRadar({ ...p.radioPing, recipientIdx: localPlayerIdx });
+}
+
+function selectTutorialBand(bandId) {
+  if (!bandId || !BANDS[bandId]) return;
+  selectedBand = bandId;
+  $$('.band-btn').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.bandId === bandId);
+  });
+  $('#visibleSlider')?.classList.toggle('hidden', bandId !== 'visible');
+  updateBandExtraPanels();
+}
+
+function applyTutorialStepChange(step) {
+  if (!step) return;
+  if (step.selectBand) selectTutorialBand(step.selectBand);
+  if (step.advance === 'visibleEnergy') {
+    step.highlight = window.matchMedia('(max-width: 768px)').matches
+      ? '#mobileVisibleBar'
+      : '#visibleSlider';
+  }
+  if (step.advance === 'beacon') {
+    setVisibleEnergy(Math.max(visibleEnergy, 8));
+  }
+  if (step.advance === 'build' && step.buildType) {
+    buildMode = step.buildType;
+    $$('.build-btn').forEach((btn) => {
+      btn.classList.toggle('active', btn.textContent === BUILD_COSTS[step.buildType]?.label);
+    });
+    $('#buildEnergyPanel')?.classList.toggle('hidden', !BUILD_COSTS[step.buildType]?.hpFromEnergy
+      && !BUILD_COSTS[step.buildType]?.hpFromHalfEnergy);
+    $('#lensBuildPanel')?.classList.toggle('hidden', step.buildType !== 'lens');
+    updateDialForBuildMode();
+  } else {
+    buildMode = null;
+    $$('.build-btn').forEach((b) => b.classList.remove('active'));
+    $('#buildEnergyPanel')?.classList.add('hidden');
+    $('#lensBuildPanel')?.classList.add('hidden');
+    updateDialForBuildMode();
+  }
+}
+
+function revealTutorialVision() {
+  const p = game?.players[localPlayerIdx];
+  if (!p?.visionGrid || !game) return;
+  for (let y = 0; y < game.gridSize; y++) {
+    for (let x = 0; x < game.gridSize; x++) {
+      p.visionGrid.set(x, y, true);
+    }
+  }
+}
+
+function startTutorial() {
+  if (tutorialActive) return;
+  if (animId) {
+    cancelAnimationFrame(animId);
+    animId = null;
+  }
+
+  tutorialActive = true;
+  buildMode = null;
+  relocateMode = false;
+  selectedBand = 'visible';
+  visibleEnergy = 5;
+  gameSync.reset();
+  setSyncOverlay(false);
+
+  game = new GameLogic(TUTORIAL_MAP, null);
+  game.setNicknames([
+    { nickname: 'P1·你', playerIndex: 0 },
+    { nickname: 'P2·友军', playerIndex: 1 },
+    { nickname: 'P3·敌军', playerIndex: 2 },
+  ]);
+  localPlayerIdx = 0;
+  revealTutorialVision();
+
+  renderer?.destroy();
+  renderer = new MapRenderer($('#gameCanvas'), $('#canvasWrap'));
+
+  buildBandUI();
+  buildBuildUI();
+  updateVisibleBandPanels();
+  setVisibleEnergy(visibleEnergy);
+
+  showScreen('gameScreen');
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      if (renderer && game) renderer.resize(game.gridSize, game.cellSize);
+    });
+  });
+
+  $('#gameRoomCode').textContent = '教程';
+  $('#btnPause')?.classList.add('hidden');
+  const returnBtn = $('#btnReturnLobby');
+  if (returnBtn) {
+    returnBtn.style.display = '';
+    returnBtn.textContent = '退出教程';
+  }
+
+  towerListDirty = true;
+  updateHUD();
+  updateTowerListUI();
+  updateStatusBar();
+
+  startGameLoop();
+
+  initAimDial();
+  initMirrorBuildDial();
+  updateDialForBuildMode();
+  aimDial?.syncFromGame();
+
+  if (!tutorial) {
+    tutorial = new Tutorial({
+      steps: TUTORIAL_STEPS,
+      overlayEl: $('#tutorialOverlay'),
+      getGame: () => game,
+      getCtx: getTutorialCtx,
+      onStepChange: applyTutorialStepChange,
+      onExit: exitTutorial,
+    });
+  }
+  tutorial.start();
+}
+
+function exitTutorial() {
+  if (!tutorialActive) return;
+  tutorialActive = false;
+  $('#tutorialOverlay')?.classList.add('hidden');
+  if (tutorial) tutorial._active = false;
+
+  stopGameLoop();
+  buildMode = null;
+  updateDialForBuildMode();
+  $('#btnPause')?.classList.remove('hidden');
+  const returnBtn = $('#btnReturnLobby');
+  if (returnBtn) returnBtn.textContent = '返回大厅';
+  showScreen('entryScreen');
+}
+
+function applyTutorialAction(action) {
+  if (!game) return { ok: false };
+  if (action.type === 'rotate') {
+    game.rotate(localPlayerIdx, action.delta);
+    aimDial?.syncFromGame();
+    tutorial?.onRotate(getTutorialCtx());
+    return { ok: true };
+  }
+  if (action.type === 'rotateSync') {
+    setLocalAimAbsolute(action.angle, true);
+    return { ok: true };
+  }
+  const res = game.handleAction(localPlayerIdx, action);
+  if (res?.ok) {
+    if (res.radioContact?.recipientIdx === localPlayerIdx) showRadioRadar(res.radioContact);
+    tutorial?.onGameAction(action, getTutorialCtx());
+  }
+  return res;
+}
+
 // ── Screens ──
 
 function showScreen(id) {
@@ -333,9 +628,13 @@ function showScreen(id) {
 
 $('#btnCreate').addEventListener('click', () => {
 
-  $('#createPanel').classList.toggle('hidden');
+  const panel = $('#createPanel');
+  const willOpen = panel.classList.contains('hidden');
+  panel.classList.toggle('hidden');
 
   $('#joinPanel').classList.add('hidden');
+
+  if (willOpen && mapData) renderCreateTeamPick();
 
 });
 
@@ -343,10 +642,21 @@ $('#btnCreate').addEventListener('click', () => {
 
 $('#btnJoin').addEventListener('click', () => {
 
-  $('#joinPanel').classList.toggle('hidden');
+  const panel = $('#joinPanel');
+  const willOpen = panel.classList.contains('hidden');
+  panel.classList.toggle('hidden');
 
   $('#createPanel').classList.add('hidden');
 
+  if (willOpen) refreshJoinTeamPick();
+
+});
+
+bindTap($('#btnTutorial'), () => startTutorial());
+
+$('#roomCodeInput')?.addEventListener('input', () => {
+  clearTimeout(joinRoomFetchTimer);
+  joinRoomFetchTimer = setTimeout(() => refreshJoinTeamPick(), 350);
 });
 
 
@@ -359,13 +669,15 @@ $('#mapFile').addEventListener('change', async (e) => {
 
   try {
 
-    mapData = JSON.parse(await file.text());
+    mapData = normalizeMapData(JSON.parse(await file.text()));
 
     $('#mapFileName').textContent = file.name;
+    selectedTeamId = null;
+    renderCreateTeamPick();
 
-  } catch {
+  } catch (err) {
 
-    toast('地图 JSON 解析失败', true);
+    toast('地图 JSON 无效：' + (err.message || '解析失败'), true);
 
   }
 
@@ -380,6 +692,7 @@ $('#btnDoCreate').addEventListener('click', async () => {
   if (!nickname) return toast('请输入昵称', true);
 
   if (!mapData) return toast('请先导入地图', true);
+  if (!selectedTeamId) return toast('请选择队伍', true);
 
   try {
     await ensureConnected();
@@ -387,7 +700,7 @@ $('#btnDoCreate').addEventListener('click', async () => {
     return toast('无法连接服务器', true);
   }
 
-  const res = await net.createRoom(nickname, mapData);
+  const res = await net.createRoom(nickname, mapData, selectedTeamId);
 
   if (!res.ok) return toast(res.error, true);
 
@@ -412,6 +725,7 @@ $('#btnDoJoin').addEventListener('click', async () => {
   const roomCode = $('#roomCodeInput').value.trim();
 
   if (!nickname || roomCode.length !== 6) return toast('请输入昵称和6位房间号', true);
+  if (!selectedTeamId) return toast('请选择队伍', true);
 
   try {
     await ensureConnected();
@@ -419,7 +733,7 @@ $('#btnDoJoin').addEventListener('click', async () => {
     return toast('无法连接服务器', true);
   }
 
-  const res = await net.joinRoom(roomCode, nickname);
+  const res = await net.joinRoom(roomCode, nickname, selectedTeamId);
 
   if (!res.ok) return toast(res.error, true);
 
@@ -483,6 +797,7 @@ function syncRoomPlayerStatus(players) {
 net.on('lobby:update', (data) => {
 
   net._socketToIndex = {};
+  lobbyTeams = data.teams || lobbyTeams;
 
   data.players.forEach(p => {
 
@@ -508,7 +823,10 @@ net.on('lobby:update', (data) => {
 
     const cls = p.disconnected ? '' : (p.ready ? 'ready-tag' : '');
 
-    li.innerHTML = `<span>P${p.playerIndex + 1} ${p.nickname}${p.isHost ? ' 👑' : ''}</span><span class="${cls}">${tag}</span>`;
+    const teamLabel = p.teamId != null ? teamName(p.teamId) : '';
+    const teamTag = teamLabel ? ` · ${teamLabel}` : '';
+
+    li.innerHTML = `<span>P${p.playerIndex + 1} ${p.nickname}${teamTag}${p.isHost ? ' 👑' : ''}</span><span class="${cls}">${tag}</span>`;
 
     list.appendChild(li);
 
@@ -533,6 +851,7 @@ function applyServerState(state) {
   if (!gameSync.apply(game, state, { localPlayerIdx })) return;
   setSyncOverlay(false);
   $('#pauseOverlay').classList.toggle('hidden', !game.paused);
+  checkRadioPingFromState();
   towerListDirty = true;
   statusBarDirty = true;
 }
@@ -714,6 +1033,8 @@ function startGame(md, lobbyPlayers) {
   startGameLoop();
 
   initAimDial();
+  initMirrorBuildDial();
+  updateDialForBuildMode();
   aimDial?.syncFromGame();
 
 }
@@ -728,16 +1049,25 @@ function startGameLoop() {
 
     if (game) {
 
-      if (gameSync.isStale(10000)) {
-        gameSync.softResync(game);
+      if (tutorialActive) {
+        const dt = Math.min(0.05, lastFrameTime ? (now - lastFrameTime) / 1000 : 1 / 30);
+        lastFrameTime = now;
+        game.tick(dt);
+        tutorial?.tick(getTutorialCtx());
+      } else {
+        lastFrameTime = now;
+        if (gameSync.isStale(10000)) {
+          gameSync.softResync(game);
+        }
+        const disconnected = !net.socket?.connected || !net.roomJoined;
+        setSyncOverlay(disconnected, disconnected ? '连接已断开，正在重连…' : '');
       }
-      const disconnected = !net.socket?.connected || !net.roomJoined;
-      setSyncOverlay(disconnected, disconnected ? '连接已断开，正在重连…' : '');
 
       game.pruneExpiredRays();
       aimDial?.tickSnap();
-      if (dialMode === 'mirrorBuild') {
-        aimDial?.updateIndicator(mirrorBuildAngle);
+      mirrorBuildDial?.tickSnap();
+      if (buildMode === 'mirror') {
+        mirrorBuildDial?.updateIndicator(mirrorBuildAngle);
       } else {
         aimDial?.syncFromGame();
       }
@@ -753,7 +1083,7 @@ function startGameLoop() {
 
       if (towerListDirty) updateTowerListUI();
 
-      if (game.winner != null) showWinOverlay();
+      if (game.winner != null && !tutorialActive) showWinOverlay();
 
     }
 
@@ -781,7 +1111,12 @@ function stopGameLoop() {
   gameSync.reset();
 
   aimDial?.reset();
+  mirrorBuildDial?.reset();
   relocateMode = false;
+  tutorialActive = false;
+  lastFrameTime = 0;
+  if (tutorial) tutorial._active = false;
+  $('#tutorialOverlay')?.classList.add('hidden');
 
 }
 
@@ -797,7 +1132,7 @@ function updateHUD() {
 
   if (!p) return;
 
-  $('#hudEnergy').textContent = Math.floor(p.energy) + ' J';
+  $('#hudEnergy').textContent = formatStat(p.energy) + ' J';
 
   $('#hudTime').textContent = formatTime(getDisplayGameTime());
 
@@ -925,7 +1260,7 @@ function updateStatusBar() {
 
           <span>${onlineLabel}</span>
 
-          <span>${Math.floor(p.hp ?? 0)}/${Math.floor(maxHp)} HP</span>
+          <span>${formatStat(p.hp ?? 0)}/${formatStat(maxHp)} HP</span>
 
         </span>
 
@@ -1016,10 +1351,14 @@ function buildBandUI() {
     const btn = document.createElement('button');
 
     btn.className = 'band-btn' + (b.id === selectedBand ? ' active' : '');
+    btn.dataset.bandId = b.id;
 
     const cost = b.cost ?? `${b.costMin}-${b.costMax}`;
+    const costLabel = typeof cost === 'number'
+      ? `${formatStat(cost)}J`
+      : `${formatStat(b.costMin)}-${formatStat(b.costMax)}J`;
 
-    btn.innerHTML = `<span>${b.label}</span><span class="cost">${cost}J</span>`;
+    btn.innerHTML = `<span>${b.label}</span><span class="cost">${costLabel}</span>`;
 
     bindTap(btn, () => {
 
@@ -1030,8 +1369,8 @@ function buildBandUI() {
       btn.classList.add('active');
 
       $('#visibleSlider').classList.toggle('hidden', b.id !== 'visible');
-      $('#radioPanel').classList.toggle('hidden', b.id !== 'radio');
-      updateVisibleBandPanels();
+      updateBandExtraPanels();
+      tutorial?.tick(getTutorialCtx());
 
     });
 
@@ -1045,10 +1384,41 @@ function buildBandUI() {
 
 
 
+function syncRadioInputs(fromDesktop = true) {
+  const msgDesktop = $('#radioMsg');
+  const msgMobile = $('#mobileRadioMsg');
+  const energyDesktop = $('#radioEnergyAmt');
+  const energyMobile = $('#mobileRadioEnergyAmt');
+  if (fromDesktop) {
+    if (msgMobile && msgDesktop) msgMobile.value = msgDesktop.value;
+    if (energyMobile && energyDesktop) energyMobile.value = energyDesktop.value;
+  } else {
+    if (msgDesktop && msgMobile) msgDesktop.value = msgMobile.value;
+    if (energyDesktop && energyMobile) energyDesktop.value = energyMobile.value;
+  }
+  radioMessage = msgDesktop?.value ?? msgMobile?.value ?? radioMessage;
+  radioEnergyAmount = roundStat(parseFloat(energyDesktop?.value ?? energyMobile?.value ?? radioEnergyAmount) || 0);
+}
+
+function syncRadioMode(mode) {
+  radioMode = mode;
+  $$('input[name="radioMode"]').forEach((r) => { r.checked = r.value === mode; });
+  $$('input[name="radioModeMobile"]').forEach((r) => { r.checked = r.value === mode; });
+}
+
+function updateBandExtraPanels() {
+  const showVisible = selectedBand === 'visible';
+  const showRadio = selectedBand === 'radio';
+  $('#visibleSlider')?.classList.toggle('hidden', !showVisible);
+  $('#mobileVisibleBar')?.classList.toggle('is-visible', showVisible);
+  $('#radioPanel')?.classList.toggle('hidden', !showRadio);
+  $('#mobileRadioBar')?.classList.toggle('is-visible', showRadio);
+  if (showRadio) syncRadioInputs(true);
+}
+
+/** @deprecated alias */
 function updateVisibleBandPanels() {
-  const show = selectedBand === 'visible';
-  $('#visibleSlider')?.classList.toggle('hidden', !show);
-  $('#mobileVisibleBar')?.classList.toggle('is-visible', show);
+  updateBandExtraPanels();
 }
 
 const VISIBLE_ENERGY_NAMES = ['红', '橙', '黄', '绿', '蓝', '靛', '紫', '紫+', '紫++', '高紫'];
@@ -1057,7 +1427,7 @@ function setVisibleEnergy(val) {
   visibleEnergy = Math.max(1, Math.min(10, val));
   const slider = $('#visibleEnergy');
   if (slider) slider.value = String(visibleEnergy);
-  const label = `${visibleEnergy}J ${VISIBLE_ENERGY_NAMES[visibleEnergy - 1] || ''}`;
+  const label = `${formatStat(visibleEnergy)}J ${VISIBLE_ENERGY_NAMES[visibleEnergy - 1] || ''}`;
   const valEl = $('#visibleEnergyVal');
   const color = visibleColor(visibleEnergy);
   const pct = ((visibleEnergy - 1) / 9) * 100;
@@ -1097,6 +1467,7 @@ function setVisibleEnergy(val) {
     if (i + 1 === visibleEnergy) btn.style.borderColor = color;
     else btn.style.borderColor = '';
   });
+  if (tutorialActive) tutorial?.tick(getTutorialCtx());
 }
 
 function initMobileVisibleBar() {
@@ -1150,17 +1521,40 @@ function initControlSliders() {
   updateVisibleBandPanels();
   bindRangeSlider($('#buildEnergy'), (e) => {
     buildEnergyInput = parseInt(e.target.value, 10) || 10;
-    $('#buildEnergyVal').textContent = buildEnergyInput + 'J';
+    $('#buildEnergyVal').textContent = formatStat(buildEnergyInput) + 'J';
   });
   bindRangeSlider($('#lensBuildFocal'), (e) => {
     lensBuildFocal = parseInt(e.target.value, 10) || 5;
     $('#lensBuildFocalVal').textContent = lensBuildFocal;
   });
-  $('#radioMsg')?.addEventListener('input', (e) => { radioMessage = e.target.value; });
-  $('#radioEnergyAmt')?.addEventListener('input', (e) => { radioEnergyAmount = parseInt(e.target.value, 10) || 0; });
-  $$('input[name="radioMode"]').forEach(r => {
-    r.addEventListener('change', () => { radioMode = r.value; });
+  $('#radioMsg')?.addEventListener('input', (e) => {
+    radioMessage = e.target.value;
+    syncRadioInputs(true);
   });
+  $('#radioEnergyAmt')?.addEventListener('input', (e) => {
+    radioEnergyAmount = roundStat(parseFloat(e.target.value) || 0);
+    syncRadioInputs(true);
+  });
+  $$('input[name="radioMode"]').forEach((r) => {
+    r.addEventListener('change', () => {
+      if (r.checked) syncRadioMode(r.value);
+    });
+  });
+  $('#mobileRadioMsg')?.addEventListener('input', (e) => {
+    radioMessage = e.target.value;
+    syncRadioInputs(false);
+  });
+  $('#mobileRadioEnergyAmt')?.addEventListener('input', (e) => {
+    radioEnergyAmount = roundStat(parseFloat(e.target.value) || 0);
+    syncRadioInputs(false);
+  });
+  $$('input[name="radioModeMobile"]').forEach((r) => {
+    r.addEventListener('change', () => {
+      if (r.checked) syncRadioMode(r.value);
+    });
+  });
+  syncRadioInputs(true);
+  syncRadioMode(radioMode);
 }
 
 
@@ -1199,7 +1593,7 @@ function buildBuildUI() {
       $('#lensBuildPanel').classList.toggle('hidden', buildMode !== 'lens');
       updateDialForBuildMode();
 
-      if (buildMode !== 'lens') renderer?.clearLensSelection();
+      if (buildMode !== 'lens') renderer?.clearOpticsSelection();
 
     });
 
@@ -1286,22 +1680,65 @@ function handleCanvasTap(clientX, clientY) {
       renderer.clearSolarSelection();
     } else {
       renderer.selectSolarAt(game, localPlayerIdx, x, y);
-      renderer.clearLensSelection();
+      renderer.clearOpticsSelection();
     }
     updateSolarInfoPanel();
+    updateOpticsInfoPanel();
+    return;
+  }
+
+  if ((cellEl?.type === 'mirror' || cellEl?.type === 'lens') && game.canSee(localPlayerIdx, x, y)) {
+    const same = renderer.selectedOptics?.x === x && renderer.selectedOptics?.y === y;
+    renderer.clearSolarSelection();
+    updateSolarInfoPanel();
+    if (same) {
+      renderer.clearOpticsSelection();
+    } else {
+      renderer.selectOpticsAt(game, localPlayerIdx, x, y);
+    }
+    updateOpticsInfoPanel();
     return;
   }
 
   renderer.clearSolarSelection();
+  renderer.clearOpticsSelection();
   updateSolarInfoPanel();
+  updateOpticsInfoPanel();
+}
 
-  if (renderer.selectLensAt(game, localPlayerIdx, x, y)) {
-    const el = game.cells[`${x},${y}`];
-    if (el) renderer.selectedLens = { x, y, focal: el.focal ?? 5 };
+function updateOpticsInfoPanel() {
+  const panel = $('#opticsInfoPanel');
+  const text = $('#opticsInfoText');
+  const btn = $('#btnUpgradeOptics');
+  if (!panel || !text || !game) return;
+  const sel = renderer?.selectedOptics;
+  if (!sel) {
+    panel.classList.add('hidden');
     return;
   }
-  renderer.clearLensSelection();
+  const el = game.cells[`${sel.x},${sel.y}`];
+  if (!el || (el.type !== 'mirror' && el.type !== 'lens')) {
+    panel.classList.add('hidden');
+    return;
+  }
+  const typeLabel = el.type === 'mirror' ? '平面镜' : '透镜';
+  panel.classList.remove('hidden');
+  if (el.uvGrade) {
+    text.innerHTML = `${typeLabel} (${sel.x}, ${sel.y})<br>已镀<strong>紫外线膜</strong> · 可反射/聚焦紫外光`;
+    btn?.classList.add('hidden');
+  } else {
+    text.innerHTML = `${typeLabel} (${sel.x}, ${sel.y})<br>普通光学面 · <strong>阻挡</strong>紫外光<br>花费 <strong>${formatStat(OPTICS_UV_UPGRADE_COST)}J</strong> 镀膜后可对紫外光生效`;
+    btn?.classList.remove('hidden');
+  }
 }
+
+function upgradeSelectedOptics() {
+  const sel = renderer?.selectedOptics;
+  if (!sel || !game) return;
+  sendAction({ type: 'upgradeOptics', x: sel.x, y: sel.y });
+}
+
+bindTap($('#btnUpgradeOptics'), () => upgradeSelectedOptics());
 
 function setRelocateMode(on) {
   relocateMode = !!on;
@@ -1336,12 +1773,12 @@ function updateSolarInfoPanel() {
   const owner = el.owner != null ? game.players[el.owner] : null;
   panel.classList.remove('hidden');
   text.innerHTML = `位置 (${sel.x}, ${sel.y})<br>`
-    + `每 <strong>10 秒</strong> 产出 <strong>${per10}J</strong><br>`
+    + `每 <strong>10 秒</strong> 产出 <strong>${formatStat(per10)}J</strong><br>`
     + `低能转化倍率 <strong>${rate}</strong>（可见光 &lt;3J 照射）<br>`
     + `归属：${owner ? (owner.nickname || `P${el.owner + 1}`) : '中立'}`;
 }
 
-function setLocalAimAbsolute(angle) {
+function setLocalAimAbsolute(angle, fromTutorialAction = false) {
   if (!game || game.paused) return;
   const a = normalizeAngle(angle);
   const aim = game.getAimRotation(localPlayerIdx);
@@ -1352,52 +1789,60 @@ function setLocalAimAbsolute(angle) {
   } else {
     game.players[localPlayerIdx].angle = a;
   }
+  if (tutorialActive) {
+    if (!fromTutorialAction) tutorial?.onRotate(getTutorialCtx());
+    return;
+  }
   uploadLocalRotation();
 }
 
 function updateDialForBuildMode() {
-  const dialEl = $('#aimDial');
-  const hint = dialEl?.querySelector('.aim-dial-hint');
-  if (buildMode === 'mirror') {
-    dialMode = 'mirrorBuild';
-    dialEl?.classList.remove('hidden');
-    if (hint) hint.textContent = '镜面方向';
-    aimDial?.reset();
-    aimDial?.updateIndicator(mirrorBuildAngle);
-  } else if (buildMode) {
-    dialMode = 'aim';
-    dialEl?.classList.add('hidden');
-  } else {
-    dialMode = 'aim';
-    dialEl?.classList.remove('hidden');
-    if (hint) hint.textContent = '长按瞄准';
+  const aimEl = $('#aimDial');
+  const mirrorEl = $('#mirrorBuildDial');
+  const inMirrorBuild = buildMode === 'mirror';
+  const hideAim = inMirrorBuild || !!buildMode;
+
+  aimEl?.classList.toggle('hidden', hideAim);
+  mirrorEl?.classList.toggle('hidden', !inMirrorBuild);
+
+  if (inMirrorBuild) {
+    mirrorBuildDial?.reset();
+    mirrorBuildDial?.updateIndicator(mirrorBuildAngle);
+  } else if (!buildMode) {
     aimDial?.syncFromGame();
   }
 }
 
 function initAimDial() {
   const el = $('#aimDial');
-  if (!el) return;
-  if (!aimDial) {
-    aimDial = new AimDial(el, {
-      getAngle: () => (dialMode === 'mirrorBuild' ? mirrorBuildAngle : getLocalAimAngle()),
-      onAngleChange: (angle) => {
-        if (dialMode === 'mirrorBuild') {
-          mirrorBuildAngle = Math.round(normalizeAngle(angle));
-        } else {
-          setLocalAimAbsolute(angle);
-        }
-      },
-    });
-  }
-  updateDialForBuildMode();
+  if (!el || aimDial) return;
+  aimDial = new AimDial(el, {
+    getAngle: () => getLocalAimAngle(),
+    onAngleChange: (angle) => setLocalAimAbsolute(angle),
+  });
+}
+
+function initMirrorBuildDial() {
+  const el = $('#mirrorBuildDial');
+  if (!el || mirrorBuildDial) return;
+  mirrorBuildDial = new AimDial(el, {
+    getAngle: () => mirrorBuildAngle,
+    onAngleChange: (angle) => {
+      mirrorBuildAngle = Math.round(normalizeAngle(angle));
+      mirrorBuildDial?.updateIndicator(mirrorBuildAngle);
+    },
+  });
+  mirrorBuildDial.updateIndicator(mirrorBuildAngle);
 }
 
 document.addEventListener('keydown', (e) => {
   if (!game || game.paused) return;
   if (e.key === 'ArrowLeft') sendAction({ type: 'rotate', delta: -5 });
   if (e.key === 'ArrowRight') sendAction({ type: 'rotate', delta: 5 });
-  if (e.key === ' ') { e.preventDefault(); fire(); }
+  if (e.key === ' ') {
+    e.preventDefault();
+    fire();
+  }
 });
 
 bindTap($('#btnFire'), fire);
@@ -1442,6 +1887,16 @@ function sendAction(action) {
 
   if (!game) return;
 
+  if (tutorialActive) {
+    const res = applyTutorialAction(action);
+    if (res?.ok) {
+      if (action.type === 'upgradeOptics') updateOpticsInfoPanel();
+      updateHUD();
+    } else if (res?.error) toast(res.error, true);
+    towerListDirty = true;
+    return;
+  }
+
   if (!net.socket?.connected || !net.roomJoined) {
     toast('未连接到房间，正在重连…', true);
     tryAutoRejoin();
@@ -1455,10 +1910,14 @@ function sendAction(action) {
     return;
   }
 
-  if (action.type === 'relocateMain') {
+  if (action.type === 'relocateMain' || action.type === 'upgradeOptics') {
     net.sendAction(action).then((res) => {
-      if (res && !res.ok) toast(res.error || '易位失败', true);
-      else towerListDirty = true;
+      if (res && !res.ok) toast(res.error || '操作失败', true);
+      else {
+        towerListDirty = true;
+        if (action.type === 'upgradeOptics') updateOpticsInfoPanel();
+        updateHUD();
+      }
     });
     return;
   }
@@ -1468,6 +1927,7 @@ function sendAction(action) {
   }
 
   net.sendAction(action).then((res) => {
+    if (res?.radioContact?.recipientIdx === localPlayerIdx) showRadioRadar(res.radioContact);
     if (res && !res.ok) toast(res.error || '操作被拒绝', true);
   });
 
@@ -1621,7 +2081,8 @@ function updateTowerListUI() {
 
       sendAction({ type: 'switchTower', towerType: 'attack', key: t.key });
 
-      renderer?.clearLensSelection();
+      renderer?.clearOpticsSelection();
+      updateOpticsInfoPanel();
 
     });
 
@@ -1637,7 +2098,8 @@ bindTap($('#btnSwitchMain'), () => {
 
   sendAction({ type: 'switchTower', towerType: 'main' });
 
-  renderer?.clearLensSelection();
+  renderer?.clearOpticsSelection();
+  updateOpticsInfoPanel();
   aimDial?.syncFromGame();
 
 });
@@ -1655,6 +2117,11 @@ bindTap($('#btnPause'), () => {
 
 
 bindTap($('#btnReturnLobby'), () => {
+
+  if (tutorialActive) {
+    exitTutorial();
+    return;
+  }
 
   if (!net.isHost) return toast('仅房间创建者可返回大厅', true);
 
@@ -1690,6 +2157,7 @@ function toast(msg, isError = false) {
 
 initControlSliders();
 initAimDial();
+initMirrorBuildDial();
 
 showScreen('entryScreen');
 
